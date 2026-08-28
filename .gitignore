@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+_preview_*.png
+_paper_*.html
+paper_artifact.html
+.DS_Store

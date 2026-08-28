@@ -1,0 +1,16 @@
+=== Sanity invariants ===
+I1 (M=0 => S3==S0): OK, empty query set path taken
+I2 (iid-resample => S0): |auroc_close gap| = 0.0285 (want < 0.05)
+I3 (normal-side RMSE): 0.1416 (want < 0.20)
+I4 teacher=kde      anom=boundary AUROC=0.982
+I4 teacher=iforest  anom=boundary AUROC=0.959
+I4 teacher=knn      anom=boundary AUROC=0.997
+I4 teacher=kde      anom=close   AUROC=0.999
+I4 teacher=iforest  anom=close   AUROC=0.992
+I4 teacher=knn      anom=close   AUROC=1.000
+I4 teacher=kde      anom=medium  AUROC=1.000
+I4 teacher=iforest  anom=medium  AUROC=0.997
+I4 teacher=knn      anom=medium  AUROC=1.000
+I4 teacher=kde      anom=far     AUROC=1.000
+I4 teacher=iforest  anom=far     AUROC=1.000
+I4 teacher=knn      anom=far     AUROC=1.000
