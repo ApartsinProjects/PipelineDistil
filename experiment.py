@@ -246,12 +246,89 @@ def sampler_mixed(X_n, M, rng, *, teachers, mu, sigma, kde, pct_map, **kw):
     return np.concatenate([Xg_l, Xg_u], axis=0)
 
 
+def sampler_langevin_adaptive(
+    X_n, M, rng, *, teachers, mu, sigma, kde, pct_map,
+    T=30, eta=0.04, beta=0.5, tau=0.3, h=0.02, alpha_mean=10.0,
+    rho_min=0.3, rho_max=3.0,
+):
+    """S5: uncertainty-guided Langevin with a PER-CHAIN adaptive projection
+    radius. Each of the M chains draws its own rho ~ log-Uniform(rho_min,
+    rho_max) at the start, giving a single sampler whose queries span both the
+    near-manifold boundary (short chains) and the far field (long chains) with
+    no static uniform+langevin mix. One hyperparameter set covers what S4
+    covered with two.
+
+    A log-uniform ceiling puts equal query mass per octave: with the default
+    [0.3, 3.0] range and M=2000, roughly a third of chains stay within rho=0.7
+    (the S3 regime), a third go out to ~1.5, and a third go out to ~3.0.
+    """
+    if M == 0:
+        return np.zeros((0, X_n.shape[1]))
+    d = X_n.shape[1]
+    nn = NearestNeighbors(n_neighbors=1).fit(X_n)
+
+    # Per-chain projection radius, log-uniform in [rho_min, rho_max].
+    log_rho = rng.uniform(np.log10(rho_min), np.log10(rho_max), size=M)
+    rho_per = 10.0 ** log_rho  # (M,)
+
+    # Initialize each chain at (random normal + rho_i * random unit direction),
+    # so chains that have room to explore start already out at their radius
+    # instead of being pinned near the manifold by the U attractor. Chains
+    # with small rho_i start close and stay close; chains with large rho_i
+    # start far and the walk refines them.
+    idx = rng.integers(0, len(X_n), size=M)
+    anchors0 = X_n[idx].copy().astype(float)
+    dirs = rng.normal(size=(M, d))
+    dirs /= (np.linalg.norm(dirs, axis=1, keepdims=True) + 1e-12)
+    x = anchors0 + dirs * rho_per[:, None]
+
+    def U(pts):
+        Z = pct_map(score_batch(teachers, pts))
+        return Z.var(axis=1) + alpha_mean * Z.mean(axis=1)
+
+    def log_p(pts):
+        return kde.score_samples(pts)
+
+    def project(pts):
+        dist, idx_nn = nn.kneighbors(pts)
+        dist = dist[:, 0]
+        anchor = X_n[idx_nn[:, 0]]
+        too_far = dist > rho_per  # elementwise, per-chain
+        if not too_far.any():
+            return pts
+        v = pts[too_far] - anchor[too_far]
+        v = v * (rho_per[too_far, None] / dist[too_far, None])
+        pts[too_far] = anchor[too_far] + v
+        return pts
+
+    # Per-chain beta: chains with small rho should stay near the manifold
+    # (full log-p prior), chains with large rho are held out only by the
+    # projection (log-p prior would drag them back inward). Scale inversely
+    # with rho, clipped so full-beta chains match the S3 setting.
+    beta_per = beta * np.minimum(1.0, rho_min / rho_per)  # (M,)
+
+    e_basis = np.eye(d) * h
+    for _ in range(T):
+        gU = np.zeros_like(x)
+        gp = np.zeros_like(x)
+        for i in range(d):
+            xp = x + e_basis[i]
+            xm = x - e_basis[i]
+            gU[:, i] = (U(xp) - U(xm)) / (2 * h)
+            gp[:, i] = (log_p(xp) - log_p(xm)) / (2 * h)
+        noise = rng.normal(size=x.shape)
+        x = x + eta * (gU + beta_per[:, None] * gp) + np.sqrt(2 * eta * tau) * noise
+        x = project(x)
+    return x
+
+
 SAMPLERS = {
     "S0_none": sampler_none,
     "S1_gaussian": sampler_gaussian,
     "S2_uniform": sampler_uniform,
     "S3_langevin": sampler_langevin,
     "S4_mixed": sampler_mixed,
+    "S5_adaptive": sampler_langevin_adaptive,
 }
 
 
