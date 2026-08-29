@@ -1,0 +1,10 @@
+[GPU2RunPod] [0s] Starting job: job-20260829-062330
+[GPU2RunPod] [0s] ENV: ep=https://s3api-us-ca-2.runpod.io/ vol=ff6wv0q99g pfx=job-20260829-062330
+[GPU2RunPod] [0s] Image: "Ubuntu 22.04.5 LTS"
+[GPU2RunPod] [0s] GPU: NVIDIA GeForce RTX 4090, 24564 MiB
+[GPU2RunPod] [3s] FATAL: torch present but torch.cuda.is_available() == False
+[GPU2RunPod] [3s] Driver: 535.129.03
+[GPU2RunPod] [5s] Torch CUDA build: 12.4
+[GPU2RunPod] [5s] Aborting before training to avoid silent billing
+[GPU2RunPod] TRAP: stage=init exit_code=42, uploading error.json
+training to avoid silent billing

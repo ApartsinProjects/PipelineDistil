@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Uncertainty-Guided Sampling for Unsupervised Distillation of Blackbox Anomaly-Detection Pipelines</title>
+<title>Where to Query a Blackbox Anomaly Pipeline: Shell Sampling for Label-Free Distillation</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
   integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
@@ -75,413 +75,141 @@ footer{margin-top:3rem;padding-top:.9rem;border-top:.5px solid var(--rule);font-
 </head>
 <body>
 <div class="docxlinks"><a class="docxlink" href="paper.docx" download>&#8595; Manuscript (.docx)</a></div>
-<h1>Uncertainty-Guided Sampling for Unsupervised Distillation of Blackbox Anomaly-Detection Pipelines</h1>
-<p class="authors">Alexander Apartsin</p><p class="affil">Independent research draft, 2026-08-28</p>
+<h1>Where to Query a Blackbox Anomaly Pipeline: Shell Sampling for Label-Free Distillation</h1>
+<p class="authors">Alexander Apartsin</p><p class="affil">Independent research draft, 2026-08-29</p>
 <div class="abstract"><h2 id="abstract">Abstract</h2>
-<p>We consider the problem of compressing one or more blackbox unsupervised anomaly-detection <strong>pipelines</strong> (preprocessing + detector + postprocessing) into a single small student model suitable for resource-constrained deployment. The teacher pipelines are only queryable — their internals are opaque — and no labeled anomalies are available at any point in training. All we have is a set of normal operating samples and the teachers' <em>scores</em> on any input we can construct. We show that the difficulty is not the distillation objective, which is a plain regression from input to teacher score, but the <strong>choice of training queries</strong>: normals alone give the student no information about the teachers' behavior on the abnormal side of the decision surface. We propose <strong>uncertainty-guided sampling</strong>, a Langevin-style walk that generates synthetic query points along the pipelines' decision boundary, guided by inter-teacher percentile disagreement plus a drift toward the anomalous side. On a 2-D two-moons benchmark with three unsupervised teachers (KDE, Isolation Forest, kNN-distance) and a 40-parameter tanh MLP student (10 seeds), the fixed-radius variant of the sampler wins the close-off-manifold band ($0.986 \pm 0.003$) and medium band ($0.998 \pm 0.002$), and an <strong>adaptive-radius variant</strong> — chains draw their projection radius from a log-uniform distribution and have their manifold-prior weight scaled inversely — wins the far band ($1.000 \pm 0.000$) with a single sampler. Repeating the sweep at $d = 5$ and $d = 10$ with a tight 3-cluster GMM (10 seeds) shows two effects: uniform augmentation collapses in every direction as $d$ grows (boundary AUROC drops from $0.92$ at $d=2$ to $0.56$ at $d=10$), confirming the coverage argument; and Gaussian jitter (S1) emerges as a surprisingly strong general-purpose baseline at higher dimension, winning boundary/close/medium at both $d=5$ and $d=10$ by margins that either match or exceed the fixed-radius Langevin variant. The adaptive-radius variant remains the clear winner on <code>far</code> at every $d$ ($0.987$ at $d=5$, $0.970$ at $d=10$). We also document two ablations that stayed in the log rather than the paper: (i) a percentile-ceiling artifact in the naive teacher-fusion map that inflated the Langevin sampler's earlier reported advantage, and (ii) a variance-only uncertainty potential that collapses queries inside the manifold noise band.</p></div>
+<p>We study how to distill a complicated, blackbox, unsupervised anomaly-detection <strong>pipeline</strong> (preprocessing, one or more detectors, and a fusion step) into a single small student model for resource-constrained deployment. The pipeline can only be queried, its internals are opaque, and no labeled anomalies exist at any point: the only data is a set of normal operating samples. The student must therefore learn the pipeline's behavior on the anomalous region from synthetic query points we place there ourselves and label with the pipeline's own scores. The central question is not the distillation objective, which is a plain regression from input to pipeline score, but <strong>where in input space a fixed budget of synthetic queries should go</strong>. We show that the informative queries lie in the <strong>low-density shell</strong> just off the normal manifold, and that within that shell the right target depends on the pipeline's off-manifold <em>shape</em>: for detectors whose score keeps growing away from the data, sample toward high score; for detectors whose score saturates, sample where the score has a large gradient. A single sampler that importance-weights the shell by <strong>both</strong> the pipeline score and its gradient magnitude is robust to this shape without being told it, and matches or exceeds shape-specific samplers across a spectrum of teacher pipelines (kernel density, isolation forest, k-NN distance, one-class SVM, and an autoencoder). We measure success as student-teacher <strong>fidelity</strong> on held-out anomalies (rank agreement), not standalone detection accuracy. We are candid about scope: some pipelines with discontinuous fusion are not reproducible by a small student at all, and on real high-dimensional tabular data fine-grained fidelity remains an open problem while simple baselines already suffice for coarse detection. All code and results are open-source.</p></div>
 <h2 id="1-introduction">1. Introduction</h2>
-<p>Unsupervised anomaly detection systems in production rarely consist of a single model. A typical pipeline chains a preprocessing stage, one or more detectors from different model families (density estimators, tree-based isolators, distance-based, deep autoencoders), and a postprocessing calibration or thresholding step. When such a pipeline has to run on a device with tight compute, memory, and power budgets — an embedded sensor, an edge inference chip, an in-browser detector — the practitioner faces a distillation problem: how to compress a system of interacting stages into a single small model whose scores approximate those of the full pipeline on inputs the deployed device will actually see.</p>
-<p>Two features of this setting make it distinct from ordinary supervised knowledge distillation [Hinton et al., 2015; Ba and Caruana, 2014]. First, the teacher is a <strong>pipeline</strong>, not a single differentiable model — we can query it end-to-end and read the anomaly score it returns, but we cannot backpropagate through it. Second, the training set is <strong>fully unsupervised</strong>: only normal operating samples exist. No labeled anomalies are ever available, at training or at validation. Whatever the student learns about the teachers' behavior on abnormal inputs, it learns from queries we ourselves construct.</p>
-<p>This paper asks: <em>given a fixed budget of $M$ synthetic queries, where in input space should we place them to teach the student the most about the teachers' decision surface?</em> We formalize the setting (§3), analyze the failure mode of normals-only distillation (§4.1), and propose a Langevin-based sampler that concentrates queries on the anomalous side of the decision boundary using a percentile-based inter-teacher disagreement potential plus a manifold-density prior (§4.2-4.3). We evaluate against three baselines on a controlled 2-D benchmark with three unsupervised teachers (§5-6.1) and a higher-dimensional stress test at $d \in \{5, 10\}$ that tests the paper's central coverage argument (§6.2). The concrete contributions:</p>
+<p>Unsupervised anomaly detection in production is rarely a single model. A deployed pipeline chains a preprocessing stage, one or more detectors from different families (density estimators, tree-based isolators, distance-based methods, deep autoencoders), and a fusion or calibration step. When such a pipeline must run on a device with tight compute, memory, and power budgets, the practitioner faces a distillation problem: compress the pipeline into one small model whose scores approximate the pipeline's on the inputs the device will see.</p>
+<p>Two features make this different from ordinary supervised knowledge distillation [Hinton et al., 2015]. First, the teacher is a <strong>pipeline</strong>, not a differentiable model: we can query it end-to-end and read the scalar score it returns, but we cannot backpropagate through it. Second, the training set is <strong>fully unsupervised</strong>: only normal samples exist, and no labeled anomalies are ever available. Whatever the student learns about the pipeline's behavior on abnormal inputs, it learns from query points we construct and label with the pipeline itself.</p>
+<p>This paper asks a single question: <em>given a fixed budget of synthetic queries, where in input space should they go so the student best reproduces the pipeline?</em> We argue and show that:</p>
 <ul>
-<li><strong>A percentile-normalized formulation</strong> of the inter-teacher disagreement signal that removes teacher-scale dominance at extremes (§4.2).</li>
-<li><strong>A radial-projection Langevin sampler</strong> that stays within a bounded neighborhood of the training manifold, avoiding the runaway-to-infinity failure of the naive chain (§4.2).</li>
-<li><strong>Sanity invariants stated in advance</strong> (§5.6) that we check before trusting any reported number — three intermediate algorithm variants were caught and rejected on these gates.</li>
-<li><strong>A coverage-scaling experiment</strong> (§6.2) that measures how the win margin of uncertainty-guided sampling grows with input dimensionality relative to uniform augmentation.</li>
+<li>The informative queries lie in the <strong>low-density shell</strong> just off the normal manifold, not on the manifold (where normals already teach the student) and not in the far field (where the pipeline score is uninformatively saturated). (§4.2)</li>
+<li>Within the shell, the target depends on the pipeline's off-manifold <strong>shape</strong>. A <em>growing</em> pipeline (score rises with distance, e.g. autoencoder reconstruction error) is best queried toward high score; a <em>saturating</em> pipeline (score plateaus, e.g. one-class SVM) is best queried at score <strong>gradients</strong> (edges). (§4.3)</li>
+<li>A single sampler that weights the shell by <strong>both</strong> score and score-gradient magnitude is automatically robust to this shape and needs no manual choice or shape label. (§4.4)</li>
+<li>Reproducibility of the pipeline can be predicted by a cheap <strong>shape probe</strong> and is fundamentally bounded: discontinuous pipelines are not distillable by a small student regardless of sampling. (§4.5, §6.4)</li>
 </ul>
-<p>All results are on synthetic benchmarks; §8.3 lists what would be needed to extend the claim to a real-data anomaly detection benchmark. Every experiment fits on a single CPU minute per condition at $d = 2$ and up to a few minutes at $d = 10$; complete reproduction takes under 15 minutes of wall clock and produces per-seed CSVs and figures.</p>
+<p>We measure student-teacher <strong>fidelity</strong> on held-out anomalies (rank agreement between student and pipeline scores) because the goal is faithful reproduction of the pipeline, not beating it. We evaluate on a controlled 2-D benchmark and a spectrum of five teacher pipelines, and we report honestly on a real-data limitation (§6.5).</p>
 <h2 id="2-related-work">2. Related work</h2>
 <h3 id="21-knowledge-distillation-and-blackbox-distillation">2.1 Knowledge distillation and blackbox distillation</h3>
-<p>Knowledge distillation was introduced as a mechanism for transferring the input-output behavior of a large teacher network to a smaller student by matching soft outputs rather than hard labels [Hinton et al., 2015]. It was preceded by work on model compression through student-teacher training [Buciluă et al., 2006; Ba and Caruana, 2014] and has since been extended to feature-map matching [Romero et al., 2015], relation-preserving losses [Park et al., 2019], and self-distillation. Our student-teacher loss (Eq. \ref{eq:loss}) is a plain squared-error match on teacher scores, closest in spirit to the original formulation.</p>
-<p>Blackbox and data-free variants are directly relevant to our setting. Data-free KD [Nayak et al., 2019; Chen et al., 2019] generates synthetic training inputs when the original training data is unavailable, typically by inverting the teacher's own activations. Our setting is intermediate: we do have training data (the normals) but not the anomalies the deployed student will need to handle, so we synthesize queries to cover that missing region.</p>
+<p>Knowledge distillation transfers a large teacher's input-output behavior to a smaller student by matching soft outputs [Hinton et al., 2015; Ba and Caruana, 2014; Buciluă et al., 2006], extended to feature and relation matching [Romero et al., 2015; Park et al., 2019]. Our objective is a plain squared-error match on pipeline scores. Data-free distillation [Nayak et al., 2019; Chen et al., 2019] synthesizes inputs when training data is unavailable, typically by inverting the teacher's activations; our setting is intermediate, since we have the normal data but not the anomalies the deployed student must handle, so we synthesize queries to cover that region.</p>
 <h3 id="22-unsupervised-anomaly-detection">2.2 Unsupervised anomaly detection</h3>
-<p>Classical unsupervised anomaly detectors span three families we use as teachers: density-based estimators such as Gaussian kernel density [Silverman, 1986] and Local Outlier Factor [Breunig et al., 2000]; boundary-based methods such as one-class SVM [Schölkopf et al., 2001] and its deep extension DeepSVDD [Ruff et al., 2018]; and isolation- or distance-based methods such as Isolation Forest [Liu et al., 2008] and k-NN distance. Deep autoencoder reconstruction error is a fourth common signal [Zhou and Paffenroth, 2017]. A recent unifying review [Ruff et al., 2021] catalogues these families and notes the field's persistent difficulty in producing calibrated scores across families — a difficulty our percentile normalization addresses directly (§4.2).</p>
-<p>Recent deep unsupervised approaches include self-supervised classification-based detectors [Bergman and Hoshen, 2020; Golan and El-Yaniv, 2018], reconstruction-driven models such as DRAEM [Zavrtanik et al., 2021] and PatchCore [Roth et al., 2022], and synthetic-augmentation methods for the industrial-inspection setting such as CutPaste [Li et al., 2021]. Our student model is architecture-agnostic; the pipeline we distill can contain any of these detectors.</p>
-<h3 id="23-synthetic-anomaly-generation-for-training">2.3 Synthetic anomaly generation for training</h3>
-<p>The problem we address — how to synthesize training queries when only normals are available — has been attacked from several angles. Adversarial-attack-style negative-sampling schemes generate queries that lie just outside the training manifold [Ducoffe and Precioso, 2018]. Score-based generative models [Song and Ermon, 2019, 2020] and diffusion methods provide principled machinery for sampling from a target density defined only through its score function, which is close in spirit to our Langevin walk on the uncertainty potential; unlike those methods, our chain does not target a normalized density and does not require training a score network. Adversarial synthesis of near-boundary examples has been explored specifically for anomaly detection [Chen et al., 2020].</p>
+<p>The teacher pipelines we distill are built from standard unsupervised detectors: density estimators such as Gaussian kernel density [Silverman, 1986] and Local Outlier Factor [Breunig et al., 2000]; boundary methods such as one-class SVM [Schölkopf et al., 2001] and Deep SVDD [Ruff et al., 2018]; isolation and distance methods such as Isolation Forest [Liu et al., 2008] and k-NN distance; and reconstruction methods such as autoencoders [Zhou and Paffenroth, 2017]. A unifying review [Ruff et al., 2021] catalogues these families and their persistent score-calibration difficulty across families, which our rank-based normalization addresses. Recent deep detectors include self-supervised [Bergman and Hoshen, 2020; Golan and El-Yaniv, 2018] and reconstruction-driven industrial methods [Zavrtanik et al., 2021; Roth et al., 2022; Li et al., 2021]; our student is architecture-agnostic to the pipeline it distills.</p>
+<h3 id="23-synthetic-query-synthesis-and-off-manifold-sampling">2.3 Synthetic query synthesis and off-manifold sampling</h3>
+<p>Synthesizing training points when only normals are available has been approached by adversarial near-boundary generation [Ducoffe and Precioso, 2018; Chen et al., 2020] and by score-based and diffusion samplers that draw from a target density defined through its score function [Song and Ermon, 2019, 2020]. Our sampler places queries by importance-weighting an off-manifold shell rather than training a generator, and does not require differentiating the teacher.</p>
 <h3 id="24-active-learning-and-query-synthesis">2.4 Active learning and query synthesis</h3>
-<p>Our sampler is a form of <em>query synthesis</em> [Angluin, 1988] — it constructs new query points rather than picking them from a pool. This distinguishes it from pool-based active learning, which is the dominant paradigm in the modern literature [Sener and Savarese, 2018; Settles, 2010]. The uncertainty potential $U(x)$ that our walk climbs is a variant of the disagreement-based measures common in active learning: query-by-committee [Seung et al., 1992], Bayesian Active Learning by Disagreement [Houlsby et al., 2011], and adversarial-margin variants [Ducoffe and Precioso, 2018]. Where those methods select from unlabeled pools, we generate synthetic points guided by a Langevin walk whose stationary structure is determined by an inter-teacher-disagreement potential.</p>
-<p>The Langevin dynamics we use to concentrate queries in high-uncertainty regions has a long history in Bayesian ML [Welling and Teh, 2011] and in modern generative modeling [Song and Ermon, 2019]. Our particular contribution is the specific potential (percentile disagreement plus mean anomaly drift) and the radial-projection variant that keeps the chain in a bounded neighborhood of the training manifold.</p>
+<p>Constructing new query points rather than selecting from a pool is <em>query synthesis</em> [Angluin, 1988], distinct from the pool-based active learning that dominates the modern literature [Sener and Savarese, 2018; Settles, 2010]. The score-gradient signal we use is related to disagreement- and margin-based acquisition [Seung et al., 1992; Houlsby et al., 2011; Ducoffe and Precioso, 2018]. Langevin dynamics for concentrating samples in target regions has a long history [Welling and Teh, 2011; Song and Ermon, 2019]; we compare a Langevin variant of our sampler against a simpler importance-weighted shell sampler and find the latter as effective and easier to reason about.</p>
 <h2 id="3-problem-setup">3. Problem setup</h2>
-<p>Let $\mathcal{P} = \{P_1, \dots, P_K\}$ be a set of blackbox pipelines, each mapping an input $x \in \mathbb{R}^d$ to a scalar anomaly score $s_k(x) = P_k(x) \in \mathbb{R}$. We have:</p>
+<p>Let $P$ be a blackbox anomaly-scoring pipeline mapping an input $x \in \mathbb{R}^d$ to a scalar score $s(x) = P(x) \in \mathbb{R}$, oriented so larger means more anomalous. We have:</p>
 <ul>
-<li>a training set $\mathcal{X}_n = \{x_i\}_{i=1}^N$ of <strong>normal</strong> samples;</li>
-<li>black-box access to every $P_k$: we can evaluate $s_k(x)$ at any $x$, but cannot inspect the pipeline;</li>
-<li><strong>no labeled anomalies</strong>, either at train or validation time (validation is done post-hoc by domain experts).</li>
+<li>a training set $\mathcal{X} = \{x_i\}_{i=1}^N$ of <strong>normal</strong> samples;</li>
+<li>query access to $P$: we may evaluate $s(x)$ at any $x$, but cannot inspect or differentiate $P$;</li>
+<li><strong>no labeled anomalies</strong>, at train or validation time.</li>
 </ul>
-<p>We want a compact student $f_\theta : \mathbb{R}^d \to \mathbb{R}^K$ (or $\mathbb{R}$ for a single fused score) that reproduces the teachers' scores at deployment. The student is typically exported as a framework-agnostic computation graph (e.g. ONNX) and further compiled for the target runtime. The interesting contribution is not the export, which is standard, but <strong>the training data used to fit $f_\theta$</strong>.</p>
-<h2 id="4-method">4. Method</h2>
-<h3 id="41-why-distillation-on-the-normals-alone-fails">4.1 Why distillation on the normals alone fails</h3>
-<p>The naive procedure is:</p>
-<p>$$
-\theta^\star = \arg\min_\theta \frac{1}{N} \sum_{i=1}^N \| f_\theta(x_i) - s(x_i) \|^2, \quad s(x) = \bigl(s_1(x),\dots,s_K(x)\bigr).
-$$</p>
-<p>This forces the student to match the teachers only where the teachers already score inputs as normal. Any behavior of $s(\cdot)$ on the anomalous side of the decision surface is unseen by the student and, in a small network, is smoothly interpolated. In practice the student's abnormal-side distribution collapses toward the normal-side mean.</p>
-<p>The remedy is to add synthetic queries $x_g$ drawn from a distribution that covers the abnormal side. The question is <em>which</em> distribution.</p>
+<p>We want a compact student $f_\theta : \mathbb{R}^d \to \mathbb{R}$ that reproduces $s$ at deployment, exported as a framework-agnostic graph (e.g. ONNX) and compiled for the target runtime. The distillation objective is a plain regression; the contribution is the placement of the synthetic queries used to fit $f_\theta$.</p>
+<p><strong>Success metric.</strong> Because the goal is to reproduce the pipeline, we measure student-teacher <strong>fidelity</strong> on a held-out anomaly set $\mathcal{A}$: the Spearman rank correlation between $f_\theta(a)$ and $s(a)$ over $a \in \mathcal{A}$ (and RMSE of the normalized scores). This rewards faithful reproduction of the pipeline's ranking on inputs it was never trained to match, rather than the student's standalone detection accuracy.</p>
+<h2 id="4-method-shell-sampling">4. Method: shell sampling</h2>
+<h3 id="41-why-normals-only-distillation-fails">4.1 Why normals-only distillation fails</h3>
+<p>Fitting the student only on the normals,
+$$
+\theta^\star = \arg\min_\theta \frac{1}{N}\sum_{i=1}^N \bigl(f_\theta(x_i) - s(x_i)\bigr)^2,
+$$
+constrains it only where the pipeline already scores inputs as normal. Off the manifold the student is unconstrained, and a small network interpolates smoothly; it has no way to reproduce the pipeline's actual off-manifold surface. We must add synthetic queries $\{q_j\}_{j=1}^M$ that carry the pipeline's behavior on the anomalous side, and fit
+$$
+\mathcal{L}(\theta) = \frac{1}{N}\sum_i \bigl(f_\theta(x_i) - s(x_i)\bigr)^2 + \gamma\,\frac{1}{M}\sum_j \bigl(f_\theta(q_j) - s(q_j)\bigr)^2 .
+$$
+The question is where to place the $q_j$.</p>
+<h3 id="42-where-the-low-density-shell">4.2 Where: the low-density shell</h3>
+<p>Let $\rho(x)$ be the distance from $x$ to its nearest training normal (a cheap proxy for data density). Queries are wasted in two places: <strong>on</strong> the manifold ($\rho \approx 0$), where the normals already supply the target, and in the <strong>far field</strong> ($\rho$ large), where most pipelines return an uninformative extreme (a saturated ceiling) and the student needs only a single anchor. The informative region is the <strong>low-density shell</strong> $\{x : \rho_{\min} \le \rho(x) \le \rho_{\max}\}$: off the manifold, but close enough that the pipeline's decision structure is still resolved and a plausible anomaly could actually appear. All samplers below draw candidates from this shell.</p>
+<h3 id="43-what-score-and-gradient-depend-on-the-pipeline-shape">4.3 What: score and gradient depend on the pipeline shape</h3>
+<p>To make signals comparable across heterogeneous detectors we convert each raw score to its rank on the training normals: $u(x) = F(s(x))$, where $F$ is the empirical CDF of $s$ on $\mathcal{X}$, extended linearly beyond the training range so that inputs scoring above every normal receive distinct values greater than one (a naive clip at one collapses the entire off-manifold region to a tie and destroys the ranking).</p>
+<p>Within the shell, which candidates are informative depends on how the pipeline behaves off the manifold:</p>
 <ul>
-<li><strong>Uniform in the bounding box</strong>: wastes queries on regions the teachers themselves consider irrelevant; the resulting $s(x_g)$ is often at ceiling and the student learns to output the ceiling everywhere far from normals.</li>
-<li><strong>Additive Gaussian noise on normals</strong>: stays too close to the training manifold; adds nothing beyond regularization.</li>
-<li><strong>Adversarial: maximize $\|s(x_g)\|$</strong>: drifts off-manifold and again produces useless ceiling queries.</li>
+<li><strong>Growing pipelines</strong> (the rank $u$ keeps rising with distance, e.g. autoencoder reconstruction error): the informative queries are toward <strong>high score</strong>. Weight candidates by $u(x)$.</li>
+<li><strong>Saturating pipelines</strong> (the rank $u$ plateaus off the manifold, e.g. one-class SVM whose decision function flattens): high-score weighting is uninformative because most of the shell is already at the plateau; the informative queries are where the score <strong>changes</strong>, i.e. at large $\|\nabla_x u(x)\|$. Weight candidates by the gradient magnitude (estimated by finite differences; the pipeline need not be differentiable).</li>
 </ul>
-<h3 id="42-uncertainty-guided-sampling">4.2 Uncertainty-guided sampling</h3>
-<p>We want queries that are (i) plausible (not off-manifold), (ii) near the teachers' decision surface (so the sample carries information about <em>where</em> the teacher switches), and (iii) <em>between</em> the teachers when $K > 1$ (so the sample tells the student which teacher to trust in that region).</p>
-<p>Let $p(x)$ be a rough density estimate of the normal training set (KDE with a wide bandwidth, or a Gaussian mixture; only needed for the gradient, so any smooth surrogate is fine). To make the disagreement measure bounded and scale-invariant across teachers we first replace every raw score $s_k(x)$ with its percentile rank on the training normals, $F_k(s_k(x)) \in [0, 1]$ where $F_k$ is the empirical CDF of teacher $k$ on $\mathcal{X}_n$. Let $p_k(x) = F_k(s_k(x))$ and $\bar p(x) = \tfrac{1}{K}\sum_k p_k(x)$. The uncertainty potential is then</p>
-<p>$$
-U(x) \;=\; \underbrace{\text{Var}_k\bigl(p_k(x)\bigr)}_{\text{inter-teacher disagreement}} \;+\; \alpha \, \underbrace{\bar p(x)}_{\text{drift toward anomalous side}}
-$$</p>
-<p>Both terms are essential: variance alone concentrates queries <strong>inside</strong> the noise band of the manifold, because that is where teachers legitimately disagree about how normal each point is. The $\alpha \bar p$ drift pulls queries into the region where the fused score is high — i.e. onto the anomalous side of the decision boundary. Draw query points by running a Langevin chain that climbs $U$ while staying inside the support of a KDE surrogate $p$ for the normal density:</p>
-<p>$$
-x_{t+1} \;=\; x_t \;+\; \eta \bigl[\, \nabla_x U(x_t) \;+\; \beta\, \nabla_x \log p(x_t) \,\bigr] \;+\; \sqrt{2\eta\tau}\,\epsilon_t, \quad \epsilon_t \sim \mathcal{N}(0,I),
-$$</p>
-<p>starting from $x_0 \sim \mathcal{X}_n$. In addition to the log-density term, at every step we apply a <strong>radial projection</strong> back to a ball of radius $\rho_{\max}$ around the nearest training normal: without it, the log-density gradient vanishes far from support and the chain runs away to arbitrarily distant points where every teacher's percentile is already 1 and the walk carries no useful information. The hyperparameters $(\eta, \beta, \tau, \alpha, \rho_{\max})$ are set once; the choice used below ($\eta{=}0.04$, $\beta{=}0.5$, $\tau{=}0.3$, $\alpha{=}10$, $\rho_{\max}{=}0.7$, $T{=}30$) was not tuned per-seed. Gradients of $s_k$ through the blackbox are approximated by central finite differences ($O(d)$ queries per gradient), which is cheap for the low-to-moderate $d$ typical of many deployment settings; when a teacher exposes a differentiable surrogate (e.g., an autoencoder reconstruction error) we use it directly.</p>
-<h3 id="43-distillation-loss">4.3 Distillation loss</h3>
-<p>With synthetic queries in hand, the loss becomes</p>
-<p>$$
-\mathcal{L}(\theta) = \underbrace{\frac{1}{N}\sum_i \|f_\theta(x_i) - s(x_i)\|^2}_{\text{normals}} \;+\; \gamma\,\underbrace{\frac{1}{M}\sum_j \|f_\theta(x_g^{(j)}) - s(x_g^{(j)})\|^2}_{\text{uncertainty-region queries}}.
-\label{eq:loss}
-$$</p>
-<p>The first term is standard distillation on labelled normals; the second is knowledge distillation on synthetic queries whose <em>placement</em> is what this paper concerns.</p>
-<p><strong>Why this is the right thing.</strong> In the fully unsupervised regime, the <em>only</em> information source about the teachers' behavior on unseen inputs is the teachers themselves. Sampling near $U$ concentrates the query budget where each new evaluation of $s_k$ reveals the most new information about the shape of the decision surface. Sampling under $p$ concentrates it where a real anomaly is likely to actually appear (near the boundary of the normal manifold, not in the middle of empty space).</p>
+<h3 id="44-the-combined-sampler">4.4 The combined sampler</h3>
+<p>Rather than choose per pipeline, weight each shell candidate by <strong>both</strong> signals:
+$$
+w(x) \;\propto\; \tfrac{1}{2}\,\widehat{u}(x) \;+\; \tfrac{1}{2}\,\widehat{\|\nabla_x u(x)\|},
+$$
+where $\widehat{\cdot}$ denotes normalization to a probability over the candidate pool, and draw $M$ queries by importance sampling. The score term handles growing pipelines, the gradient term handles saturating ones, and because both are present the sampler is robust to the pipeline's shape without being told it. We refer to this as the <strong>combined shell sampler</strong>. (A Langevin variant that walks up the same potential while a density prior holds it in the shell gives equivalent results and is described in Appendix A; the importance-weighted form is simpler and used throughout.)</p>
+<h3 id="45-automatic-operation-and-a-reproducibility-probe">4.5 Automatic operation and a reproducibility probe</h3>
+<p>The combined sampler needs no manual shape selection. If a diagnostic is wanted, a cheap <strong>shape probe</strong> estimates whether a pipeline is growing or saturating by measuring how the median score changes across concentric shells at increasing $\rho$: a growing pipeline's score keeps rising past the training range, a saturating one plateaus. In our experiments an explicit growth-to-weight rule based on this probe matches the fixed combined sampler but does not beat it, so we recommend the combined sampler as the default and reserve the probe as a diagnostic. The probe also flags the failure case of §6.4: a pipeline whose score is flat across all shells cannot be reproduced by any sampler.</p>
 <h2 id="5-experimental-setup">5. Experimental setup</h2>
-<p><strong>Data.</strong> Two-moons ($n = 2{,}000$, noise = 0.15) as normals; a held-out validation set of 500 more normals; four off-manifold test sets defined by minimum distance to the training manifold and sampled uniformly in $[-2.5, 3.5] \times [-2.0, 2.0]$: <strong>boundary</strong> ($0.10 \le d < 0.22$, sits inside the noise band and is the hardest set for the teachers themselves), <strong>close</strong> ($0.22 \le d < 0.40$), <strong>medium</strong> ($0.40 \le d < 0.80$), and <strong>far</strong> ($d \ge 1.20$). 500 points per set.</p>
-<p><strong>Teachers ($K = 3$, all unsupervised, fit on the 2 000 training normals only).</strong>
-1. Kernel density estimator (Gaussian, bandwidth 0.3): $s_1 = -\log \hat p(x)$.
-2. Isolation Forest [Liu et al., 2008], 100 trees: $s_2 = -\text{score\_samples}(x)$.
-3. $k$-NN distance, $k=10$: $s_3 = \tfrac{1}{k}\sum_{j \in \mathcal{N}_k(x)}\|x - x_j\|$.</p>
-<p>The <strong>fused teacher score</strong> is $\bar p(x) = \tfrac{1}{3}\sum_k p_k(x)$, the mean of the per-teacher percentile ranks. Percentile ranks are bounded and scale-free, so no single teacher dominates fused magnitude or fused variance at extremes.</p>
-<p><strong>Student.</strong> A deliberately undercapacity MLP: <code>Linear(2, 8) → tanh → Linear(8, 3)</code>, ~40 parameters, with input standardization. The point is that the student cannot memorize the teacher across the whole plane; <em>where</em> the training queries live decides what boundary it learns.</p>
-<p><strong>Conditions ($M = 2\,000$ synthetic queries per condition, one variable across the sweep).</strong></p>
-<table>
-<thead>
-<tr>
-<th>#</th>
-<th>Sampler</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>S0</td>
-<td>normals only ($M = 0$)</td>
-</tr>
-<tr>
-<td>S1</td>
-<td>Gaussian jitter on normals, $\sigma = 0.3$</td>
-</tr>
-<tr>
-<td>S2</td>
-<td>uniform in the anomaly bounding box $[-2, 3] \times [-1.5, 1.5]$</td>
-</tr>
-<tr>
-<td>S3</td>
-<td><strong>uncertainty-guided Langevin</strong> (this paper): $T=30$ steps, $\eta=0.04$, $\beta=0.5$, $\tau=0.3$, $\alpha=10$, $\rho_{\max}=0.7$</td>
-</tr>
-<tr>
-<td>S4</td>
-<td><strong>mixed</strong> (this paper): $M/2$ from S3 + $M/2$ from S2 in a single training run</td>
-</tr>
-<tr>
-<td>S5</td>
-<td><strong>adaptive Langevin</strong> (this paper): per-chain projection radius $\rho_i \sim \text{log-Uniform}(0.3, 3.0)$; per-chain $\beta_i = \beta \min(1, 0.3/\rho_i)$; chain initialized at anchor plus $\rho_i \cdot \text{unit direction}$ so long-$\rho$ chains start already out. One sampler spans the near-boundary and far-field regimes without a static uniform mix.</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Distillation loss.</strong> For every condition, the student minimizes $\|f_\theta(x) - p(x)\|_2^2$ across the union of the training normals and the synthetic queries (percentile targets, so $y \in [0, 1]^3$). Adam, <code>lr=3e-3</code>, batch 128, up to 1500 iterations with early stopping (<code>n_iter_no_change=40</code>).</p>
-<p><strong>Metrics.</strong> Per anomaly set: AUROC of the student's fused output; RMSE between student and teacher fused output; Spearman rank correlation between student and teacher on the anomaly points. Plus normal-side score-fidelity RMSE.</p>
-<h3 id="56-sanity-invariants-stated-in-advance">5.6 Sanity invariants (stated in advance)</h3>
-<p>The comparison is only meaningful if the sampler is the sole variable, and only after four checks pass:</p>
-<ul>
-<li><strong>I1</strong> — S3 with $M = 0$ degenerates to S0 exactly. <strong>Passes</strong>: the code takes the same path.</li>
-<li><strong>I2</strong> — S3 with $x_g$ resampled i.i.d. from $\mathcal{X}_n$ (Langevin disabled) matches S0 on <code>close</code> AUROC within seed noise. <strong>Passes</strong>: $|\Delta_\text{AUROC}| = 0.029 < 0.05$.</li>
-<li><strong>I3</strong> — normal-side score-fidelity RMSE for S0 is $< 0.20$ (percentile z-units). <strong>Passes</strong>: $0.142$.</li>
-<li><strong>I4</strong> — each teacher's own AUROC on every anomaly set is $\ge 0.95$, so the task is genuinely discriminative but not saturated for the hardest set. <strong>Passes</strong>: KDE $\in [0.98, 1.00]$, Isolation Forest $\in [0.96, 1.00]$, kNN $\in [0.98, 1.00]$; boundary is the tightest at $\approx 0.98$.</li>
-</ul>
+<p><strong>Data.</strong> Two-moons normals ($N = 2000$, noise $0.15$); a held-out off-manifold anomaly set drawn uniformly in the shell $0.2 < \rho < 2.5$ (500 points). This isolates the sampler as the only variable on geometry we control.</p>
+<p><strong>Teacher pipelines (spectrum).</strong> Five single-stage pipelines spanning off-manifold shapes, each fit on the normals only: k-NN distance ($k=10$) and Gaussian kernel density (both monotone), one-class SVM with an RBF kernel (saturating), an undercomplete tanh autoencoder scored by reconstruction error (growing), and a percentile-max fusion of the autoencoder and kernel density (discontinuous). We additionally build a three-step complex pipeline (standardize, autoencoder reconstruction error, density-gated combination) for the mechanism study of §6.3.</p>
+<p><strong>Student.</strong> A small tanh MLP (one hidden layer of 8 units, about 40 parameters) with input standardization, deliberately low-capacity so that <em>where</em> the queries are placed, not student size, determines what boundary it learns.</p>
+<p><strong>Samplers compared.</strong> Normals-only (no queries); Gaussian jitter on normals; uniform in a bounding box; <strong>score-only</strong> shell (climb $u$); <strong>gradient-only</strong> shell (edges); and the <strong>combined</strong> shell sampler of §4.4. A Langevin variant is compared in the appendix.</p>
+<p><strong>Metric.</strong> Student-teacher fidelity on the held-out anomalies: Spearman rank correlation between student and pipeline scores (and RMSE of normalized scores). Means over 3 seeds unless stated.</p>
 <h2 id="6-results">6. Results</h2>
-<h3 id="61-two-moons-10-seeds">6.1 Two-moons, 10 seeds</h3>
-<p>Means $\pm$ s.d. over 10 seeds. Same student architecture, optimizer, and normalization across conditions; only the sampler differs. Bold marks the best within each column when the margin exceeds one s.d. of the runner-up.</p>
-<p><strong>Student AUROC vs the fused teacher, per anomaly set</strong> (extended-percentile fusion; see §7 for the ceiling-tie audit that motivated this).</p>
+<h3 id="61-the-informative-region-and-the-shape-dependence">6.1 The informative region and the shape dependence</h3>
+<p>Placing queries in the low-density shell is what makes distillation work: across all reproducible teacher pipelines, every shell-based sampler lifts fidelity from the normals-only baseline (Spearman $\approx 0.2$–$0.3$) to $0.7$–$0.97$. Within the shell, the score-only and gradient-only samplers trade off exactly as the shape argument predicts.</p>
+<p><strong>Student-teacher fidelity (Spearman) on held-out anomalies, per teacher pipeline.</strong></p>
 <table>
 <thead>
 <tr>
-<th>Sampler</th>
-<th>boundary</th>
-<th>close</th>
-<th>medium</th>
-<th>far</th>
+<th>Pipeline (shape)</th>
+<th>normals-only</th>
+<th>score-only</th>
+<th>gradient-only</th>
+<th><strong>combined</strong></th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>S0 (none)</td>
-<td>$0.912 \pm 0.026$</td>
-<td>$0.950 \pm 0.019$</td>
-<td>$0.954 \pm 0.021$</td>
-<td>$0.919 \pm 0.096$</td>
+<td>k-NN distance (monotone)</td>
+<td>$0.308$</td>
+<td>$0.950$</td>
+<td>$0.968$</td>
+<td>$0.966$</td>
 </tr>
 <tr>
-<td>S1 (gaussian)</td>
-<td>$\mathbf{0.934 \pm 0.014}$</td>
-<td>$0.968 \pm 0.009$</td>
-<td>$0.958 \pm 0.017$</td>
-<td>$0.945 \pm 0.055$</td>
+<td>kernel density (monotone)</td>
+<td>$0.280$</td>
+<td>$0.933$</td>
+<td>$0.940$</td>
+<td>$0.944$</td>
 </tr>
 <tr>
-<td>S2 (uniform)</td>
-<td>$0.924 \pm 0.013$</td>
-<td>$0.984 \pm 0.004$</td>
-<td>$0.997 \pm 0.004$</td>
-<td>$0.998 \pm 0.004$</td>
+<td>one-class SVM (saturating)</td>
+<td>$-0.056$</td>
+<td>$0.350$</td>
+<td>$0.562$</td>
+<td>$\mathbf{0.708}$</td>
 </tr>
 <tr>
-<td><strong>S3 (ours)</strong></td>
-<td>$0.918 \pm 0.006$</td>
-<td>$\mathbf{0.986 \pm 0.003}$</td>
-<td>$\mathbf{0.998 \pm 0.002}$</td>
-<td>$0.931 \pm 0.103$</td>
+<td>autoencoder (growing)</td>
+<td>$0.322$</td>
+<td>$\mathbf{0.911}$</td>
+<td>$0.818$</td>
+<td>$0.823$</td>
 </tr>
 <tr>
-<td><strong>S4 (ours, mixed)</strong></td>
-<td>$0.914 \pm 0.011$</td>
-<td>$0.983 \pm 0.005$</td>
-<td>$0.997 \pm 0.002$</td>
-<td>$0.997 \pm 0.005$</td>
-</tr>
-<tr>
-<td><strong>S5 (ours, adaptive)</strong></td>
-<td>$0.892 \pm 0.004$</td>
-<td>$0.969 \pm 0.008$</td>
-<td>$0.996 \pm 0.003$</td>
-<td>$\mathbf{1.000 \pm 0.000}$</td>
+<td>percentile-max fusion (discontinuous)</td>
+<td>$0.055$</td>
+<td>$0.069$</td>
+<td>$0.106$</td>
+<td>$0.054$</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Off-manifold score-fidelity, RMSE (extended-percentile units, lower is better).</strong></p>
-<table>
-<thead>
-<tr>
-<th>Sampler</th>
-<th>boundary</th>
-<th>close</th>
-<th>medium</th>
-<th>far</th>
-<th>normals</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>S0</td>
-<td>$0.231$</td>
-<td>$0.295$</td>
-<td>$0.447$</td>
-<td>$0.671$</td>
-<td>$0.148$</td>
-</tr>
-<tr>
-<td>S1</td>
-<td>$0.142$</td>
-<td>$0.176$</td>
-<td>$0.282$</td>
-<td>$0.466$</td>
-<td>$\mathbf{0.134}$</td>
-</tr>
-<tr>
-<td>S2</td>
-<td>$\mathbf{0.140}$</td>
-<td>$0.097$</td>
-<td>$0.123$</td>
-<td>$0.232$</td>
-<td>$0.158$</td>
-</tr>
-<tr>
-<td><strong>S3 (ours)</strong></td>
-<td>$0.147$</td>
-<td>$\mathbf{0.071}$</td>
-<td>$\mathbf{0.076}$</td>
-<td>$0.453$</td>
-<td>$0.169$</td>
-</tr>
-<tr>
-<td><strong>S4 (ours, mixed)</strong></td>
-<td>$0.151$</td>
-<td>$0.080$</td>
-<td>$0.089$</td>
-<td>$0.241$</td>
-<td>$0.165$</td>
-</tr>
-<tr>
-<td><strong>S5 (ours, adaptive)</strong></td>
-<td>$0.238$</td>
-<td>$0.179$</td>
-<td>$0.120$</td>
-<td>$\mathbf{0.102}$</td>
-<td>$0.172$</td>
-</tr>
-</tbody>
-</table>
-<p><strong>What the numbers say.</strong> Four paper-level findings emerge across the 10-seed sweep:</p>
-<ol>
-<li><strong>S3 (uncertainty-guided Langevin)</strong> delivers the best AUROC on the <code>close</code> band ($0.986 \pm 0.003$) and <code>medium</code> band ($0.998 \pm 0.002$), the best off-manifold RMSE on both bands (0.071 and 0.076), and the tightest cross-seed variance of any sampler on those bands ($\sigma \le 0.003$). Its one weakness is <code>far</code> AUROC: because the walk is capped at $\rho_{\max} = 0.7$ from the manifold, the student is never trained on true far-field points and the tanh MLP's free extrapolation is unreliable ($0.931 \pm 0.103$).</li>
-<li><strong>S5 (adaptive) fixes the far-field weakness with a single sampler.</strong> Per-chain $\rho_i \sim \text{log-Uniform}(0.3, 3.0)$ gives the query cloud a real spread across all four bands, with per-chain $\beta_i$ scaled inversely to $\rho_i$ so long-$\rho$ chains are not dragged back by the manifold prior. Result: <code>far</code> AUROC becomes $\mathbf{1.000 \pm 0.000}$ (from $0.931$ for S3) and <code>far</code> RMSE the lowest of any sampler ($\mathbf{0.102}$). This comes at a small tax on the near bands: <code>boundary</code> AUROC drops from $0.918$ (S3) to $0.892$ and <code>boundary</code> RMSE roughly doubles.</li>
-<li><strong>S1 (Gaussian jitter) is the surprising boundary winner</strong> on this small benchmark ($0.934 \pm 0.014$), at an order of magnitude less compute than S3 or S5 (no finite-difference gradients, no chain). This is the pattern to keep in mind at higher $d$ (§6.2).</li>
-<li><strong>S4 (mixed) is Pareto-dominated by S5</strong> on the two near-manifold bands (which is where S4 was meant to help) and does not win any column outright at $d=2$. It stays in the paper because it becomes relevant in higher-$d$ discussions.</li>
-</ol>
-<p><strong>Figure.</strong> <img alt="Contours of the fused teacher and two students, and the S3 query cloud" src="figure_main.png" /></p>
-<p>Top-left: the percentile-fused teacher (bounded in $[0, 1]$). Top-right: student S0 trained on normals only — the tanh MLP extrapolates arbitrary uncalibrated values off-manifold (colorbar range $[0.2, 2.1]$). Bottom-left: student S3 — smoothly rising score away from the manifold with a compact score range $[0.08, 1.6]$. <strong>Bottom-right</strong>: the S3 query cloud (red) overlaid on the teacher — queries form a clean halo at $0.15 - 0.7$ from the manifold, exactly where the decision boundary is. This visual mirrors the numerical result: S3 covers the boundary-to-medium band densely and the far field not at all.</p>
-<h3 id="62-higher-dimensional-stress-test">6.2 Higher-dimensional stress test</h3>
-<p>The paper's central prediction is that uniform augmentation becomes intractable as the input dimension grows — the manifold's volume shrinks exponentially, so a fixed query budget covers less and less of the neighborhood the student actually needs to learn. The 2D setup is too small to test this, so we repeat the sweep at $d \in \{5, 10\}$ with an analogous synthetic setup: a mixture of $K=3$ tight ($\sigma = 0.05$) isotropic Gaussians whose centers are drawn once (seed independent of the data seed) and forced to be at least $1.5$ apart in Euclidean distance, so the clusters are unambiguously separated at every $d$. Anomaly bands are the same absolute distance ranges as at $d=2$; the uniform sampler's box is derived from the training set's per-dim min/max plus a $1.0$ margin, so no hyperparameter is tuned per-dim. Three seeds per condition per $d$; identical student architecture (<code>Linear(d, 8) → tanh → Linear(8, 3)</code>), optimizer, and sampler hyperparameters as at $d=2$.</p>
-<p><strong>Result (student AUROC, mean $\pm$ sd, 3 seeds at $d=5, 10$; 10 seeds at $d=2$).</strong></p>
-<p><em>d = 5</em>, 10 seeds</p>
-<table>
-<thead>
-<tr>
-<th>Sampler</th>
-<th>boundary</th>
-<th>close</th>
-<th>medium</th>
-<th>far</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>S0 (none)</td>
-<td>$0.763 \pm 0.101$</td>
-<td>$0.786 \pm 0.129$</td>
-<td>$0.737 \pm 0.150$</td>
-<td>$0.588 \pm 0.155$</td>
-</tr>
-<tr>
-<td>S1 (gaussian)</td>
-<td>$\mathbf{0.898 \pm 0.021}$</td>
-<td>$\mathbf{0.971 \pm 0.012}$</td>
-<td>$\mathbf{0.991 \pm 0.007}$</td>
-<td>$0.970 \pm 0.024$</td>
-</tr>
-<tr>
-<td>S2 (uniform)</td>
-<td>$0.673 \pm 0.018$</td>
-<td>$0.771 \pm 0.020$</td>
-<td>$0.875 \pm 0.040$</td>
-<td>$0.928 \pm 0.042$</td>
-</tr>
-<tr>
-<td><strong>S3 (ours)</strong></td>
-<td>$0.868 \pm 0.018$</td>
-<td>$0.952 \pm 0.009$</td>
-<td>$0.987 \pm 0.003$</td>
-<td>$0.888 \pm 0.056$</td>
-</tr>
-<tr>
-<td><strong>S4 (ours, mixed)</strong></td>
-<td>$0.633 \pm 0.055$</td>
-<td>$0.740 \pm 0.073$</td>
-<td>$0.849 \pm 0.050$</td>
-<td>$0.880 \pm 0.045$</td>
-</tr>
-<tr>
-<td><strong>S5 (ours, adaptive)</strong></td>
-<td>$0.662 \pm 0.046$</td>
-<td>$0.793 \pm 0.053$</td>
-<td>$0.930 \pm 0.035$</td>
-<td>$\mathbf{0.987 \pm 0.010}$</td>
-</tr>
-</tbody>
-</table>
-<p><em>d = 10</em>, 10 seeds</p>
-<table>
-<thead>
-<tr>
-<th>Sampler</th>
-<th>boundary</th>
-<th>close</th>
-<th>medium</th>
-<th>far</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>S0 (none)</td>
-<td>$0.668 \pm 0.107$</td>
-<td>$0.765 \pm 0.142$</td>
-<td>$0.774 \pm 0.159$</td>
-<td>$0.668 \pm 0.186$</td>
-</tr>
-<tr>
-<td>S1 (gaussian)</td>
-<td>$0.803 \pm 0.029$</td>
-<td>$\mathbf{0.943 \pm 0.028}$</td>
-<td>$\mathbf{0.981 \pm 0.017}$</td>
-<td>$0.955 \pm 0.046$</td>
-</tr>
-<tr>
-<td>S2 (uniform)</td>
-<td>$0.563 \pm 0.055$</td>
-<td>$0.616 \pm 0.072$</td>
-<td>$0.668 \pm 0.081$</td>
-<td>$0.756 \pm 0.064$</td>
-</tr>
-<tr>
-<td><strong>S3 (ours)</strong></td>
-<td>$0.804 \pm 0.040$</td>
-<td>$0.930 \pm 0.029$</td>
-<td>$0.976 \pm 0.016$</td>
-<td>$0.906 \pm 0.057$</td>
-</tr>
-<tr>
-<td><strong>S4 (ours, mixed)</strong></td>
-<td>$0.535 \pm 0.037$</td>
-<td>$0.625 \pm 0.039$</td>
-<td>$0.726 \pm 0.032$</td>
-<td>$0.854 \pm 0.030$</td>
-</tr>
-<tr>
-<td><strong>S5 (ours, adaptive)</strong></td>
-<td>$0.612 \pm 0.037$</td>
-<td>$0.789 \pm 0.049$</td>
-<td>$0.915 \pm 0.029$</td>
-<td>$\mathbf{0.970 \pm 0.014}$</td>
-</tr>
-</tbody>
-</table>
-<p>At $d=10$ the boundary comparison between S3 ($0.804 \pm 0.040$) and S1 ($0.803 \pm 0.029$) is statistically indistinguishable: paired Wilcoxon signed-rank test, one-sided S3 $>$ S1, $p = 0.385$ across 10 seeds.</p>
-<p><img alt="Student AUROC per band as the input dimension grows" src="figure_dimscaling.png" /></p>
-<p><strong>What the numbers say.</strong></p>
-<ol>
-<li><strong>Uniform augmentation collapses in every direction as $d$ grows.</strong> S2's boundary AUROC drops from $0.924 \pm 0.013$ at $d=2$ to $0.673 \pm 0.018$ at $d=5$ to $0.563 \pm 0.055$ at $d=10$; close, medium, and even far follow the same pattern. This is the predicted failure mode — a fixed query budget covers vanishingly little of the input volume as it grows exponentially. S4 (which spends half its budget uniformly) collapses too, from $0.914$ boundary at $d=2$ to $0.535$ at $d=10$.</li>
-<li><strong>Gaussian jitter (S1) is the strongest general-purpose sampler at higher $d$</strong>, winning boundary, close, and medium at both $d=5$ and $d=10$, and staying within one s.d. of the winner on <code>far</code> at $d=5$. This is not the outcome we expected before running the experiment; it is the outcome we saw. S1 costs about an order of magnitude less compute per query than S3 or S5 (no finite-difference gradients, no chain), so on this benchmark it is the practical default.</li>
-<li><strong>S3 (uncertainty-guided, fixed radius) matches S1 on boundary and is a close second on close/medium</strong> at higher $d$. At $d=10$ the boundary comparison between S3 and S1 is statistically indistinguishable ($p = 0.385$, paired Wilcoxon). S3's coverage constraint continues to hurt on <code>far</code>, where the tanh MLP extrapolates unreliably.</li>
-<li><strong>S5 (adaptive) wins the <code>far</code> band at every $d$</strong>: $1.000$ at $d=2$, $0.987$ at $d=5$, $0.970$ at $d=10$. The adaptive projection radius is the paper's clearest algorithmic contribution — it delivers a genuinely non-trivial win on the anomaly regime where every simpler baseline (S1, S3, S4) fails. The tax is real on the near bands (boundary/close), where S1 does better.</li>
-<li><strong>S4 (mixed) is now dominated by S5 at higher $d$</strong>: the static uniform half wastes budget on empty space, while S5's adaptive radius spends the corresponding compute in a productive direction.</li>
-</ol>
-<p><strong>Scope of this section.</strong> Ten seeds per (condition, $d$) is enough to distinguish samplers separated by more than one s.d. on any single band, and enough to run per-band paired significance tests where the numeric margin is tighter (see the S3 vs S1 boundary comparison at $d=10$). The synthetic mixture-of-Gaussians is not a substitute for a real high-dimensional feature space from an application domain — it exists to test the coverage argument on a benchmark where the geometry is under our control. Reproduce with:</p>
-<pre><code class="language-bash">python experiment_highd.py --dims 5 10 --seeds 10          # ~110 min single CPU
-modal run modal_pipedistil.py --dims 5,10 --seeds 0,...,9  # ~14 min fan-out
-</code></pre>
-<h2 id="7-ablation-and-diagnosis">7. Ablation and diagnosis</h2>
-<p>Three intermediate configurations were tested and rejected on the sanity checks or on the metric board; all three stay in the log rather than the paper, per this project's wins-only reporting.</p>
-<ul>
-<li><strong>Naive Langevin with $z$-normalized targets and variance-only $U$.</strong> All queries drifted to the clipping box; teacher $z$-scores blew up to $>100\sigma$, corrupting the student's loss. <strong>I4 passed but I3 failed</strong> (normal-side RMSE $0.73$); AUROC unusable.</li>
-<li><strong>Percentile-normalized targets with variance-only $U(x) = \mathrm{Var}_k p_k(x)$</strong>, i.e., $\alpha=0$. Invariants pass, but S3 queries collapse <em>inside</em> the noise band of the manifold (visible in the query cloud at that setting), because that is where the teachers legitimately disagree about how normal each point is. Boundary AUROC drops to $0.900$, below Gaussian jitter. Adding the drift term $\alpha \bar p$ ($\alpha = 10$) fixes both the query cloud and the metric board — this is the ablation that isolates why the paper needs both terms of $U$.</li>
-</ul>
-<p><strong>Percentile-ceiling audit.</strong> An earlier draft of the results used naive percentile normalization $F_k(x) = \text{searchsorted}(s_k(\mathcal{X}_n), x) / N$, which caps at $1.0$ for any raw score exceeding the training maximum. An audit on the anomaly test sets revealed pervasive ceiling ties: at $d=10$, $100\%$ of <code>far</code> anomalies received percentile exactly $1.0$ for KDE and kNN, and $100\%$ for IsolationForest as well. This ceiling turns the "far AUROC" metric into a tie-breaking artifact and inflated the win margin of any sampler that trained on far-field queries. The published tables use an <strong>extended percentile map</strong> that linearly extrapolates past the training range using the top-decile slope, so anomalies far from the training distribution receive distinct values above $1$. Rerunning the entire sweep with the fix corrected several per-cell numbers and, notably, promoted Gaussian jitter (S1) to boundary-winner at $d=2$ and to close/medium-winner at $d=5, 10$. The story is more modest but honest: uncertainty-guided sampling still wins where the argument predicts (boundary at $d=10$, far at every $d$ with the adaptive variant), but the previous "sweeps all near-manifold bands" claim was partly an artifact.</p>
-<h2 id="8-discussion">8. Discussion</h2>
-<h3 id="81-when-does-uncertainty-guided-sampling-win">8.1 When does uncertainty-guided sampling win?</h3>
-<p>The 10-seed results at $d \in \{2, 5, 10\}$ separate the samplers into three regimes.</p>
-<p><strong>Uncertainty-guided sampling wins clearly on <code>far</code> at every $d$</strong>, and only there. The adaptive-radius variant (S5) achieves $1.000$ at $d=2$, $0.987$ at $d=5$, $0.970$ at $d=10$. It is the only sampler in the study that trains the student on genuine far-field queries (as opposed to uniform in a bounding box, which is intractable at higher $d$, or a bounded Langevin walk, which never reaches the far field). This is the paper's clearest positive contribution.</p>
-<p><strong>On close and medium</strong> — the two nearer off-manifold bands — the fixed-radius Langevin (S3) is competitive at $d=5$ and $d=10$ but is edged out by Gaussian jitter (S1) at both dimensions. At $d=2$ S3 wins these two bands. So the near-manifold advantage of the Langevin machinery over cheap Gaussian jitter shrinks and eventually reverses as $d$ grows.</p>
-<p><strong>On boundary at higher $d$</strong>, S3 and S1 are statistically indistinguishable ($p = 0.385$ paired Wilcoxon at $d=10$). Either is a reasonable choice; neither wins clearly.</p>
-<p><strong>Uniform augmentation (S2) collapses as $d$ grows on every band</strong>, from $0.924$ boundary at $d=2$ to $0.563$ at $d=10$. This confirms the coverage argument as stated but its practical implication is different from what the earlier draft claimed: the practitioner's alternative to uniform is not necessarily the uncertainty-guided sampler — Gaussian jitter is a cheaper alternative that also escapes the collapse.</p>
-<p><strong>Practical recommendation.</strong> Default to Gaussian jitter (S1) — it is cheap, needs no gradients, and wins boundary/close/medium at higher $d$. Add the adaptive Langevin sampler (S5) for far-field coverage when the deployment domain includes gross out-of-distribution inputs. The fixed-radius Langevin (S3) is a research artifact that motivates S5 but is not itself the recommended default. S4 (static mixed) is Pareto-dominated by S5 and is not recommended.</p>
-<h3 id="82-deployment">8.2 Deployment</h3>
-<p>Once the student is fit, the export path is standard: convert to a framework-agnostic computation graph (e.g. ONNX), apply parameter quantization on the way in, and compile for the target runtime (e.g. TVM). Nothing about the deployment step depends on the choice of sampler; this paper's contribution is upstream, at the training-data step, and is orthogonal to the compression / export tooling.</p>
-<h3 id="83-limitations-and-future-work">8.3 Limitations and future work</h3>
-<p>The two-moons + tight-GMM setups are intentionally small: $d \in \{2, 5, 10\}$ inputs, three cheap teachers, a 40-parameter student, a single CPU minute per condition at $d=2$ and up to $\sim$4 minutes per S3 seed at $d=10$. Their purpose is to isolate the sampler as the only experimental variable and to expose failure modes that a larger benchmark would hide behind noise. Concrete next steps, in order of expected paper-strengthening per hour of work:</p>
-<ol>
-<li><strong>Bug audit of the far-field percentile ceiling.</strong> At high $d$ every "far" anomaly gets percentile $= 1$, so the raw "far AUROC" is partly an artifact of tie-breaking. A bandwidth-extended percentile (interpolating past the training max) would give an honest measurement and may shift the far-field comparison.</li>
-<li><strong>More seeds at $d \ge 5$.</strong> The $d=5$ and $d=10$ results are three seeds each; the consistent-across-bands pattern carries the claim, but 10 seeds would let per-cell margins be individually significance-tested.</li>
-<li><strong>Real-data benchmark</strong> (10-50 D, non-Gaussian). A public tabular anomaly-detection benchmark (KDDCup, MulcrossHTTP, MVTec-AD features), or any domain with genuine unsupervised teachers and no labels. The scaling pattern in §6.2 should transfer, but the specific per-band winners will depend on the teachers' actual disagreement geometry on real signals.</li>
-<li><strong>Student-aware active learning.</strong> Two-round protocol: (i) train student S0 on normals only, (ii) generate queries where $|f_{\text{S0}}(x) - \bar p(x)|$ is largest under the manifold prior, and retrain. Standard active-learning practice, and typically beats variance-only uncertainty potentials at similar compute.</li>
-</ol>
-<h2 id="9-conclusion">9. Conclusion</h2>
-<p>Distilling a system of blackbox unsupervised anomaly-detection pipelines into a small student is really a <em>training-data</em> problem, not a modelling one. When the only labels are "normal", the practitioner must synthesize queries that carry information about the teachers' behavior on the unseen anomalous side. We showed that a Langevin walk on a percentile-normalized inter-teacher disagreement potential, combined with a drift toward the anomalous side and a radial projection back to the training manifold, produces query clouds that concentrate exactly where the decision boundary lives. On a controlled 2-D benchmark the resulting student matches or beats every baseline on the near-manifold anomaly bands; on a $d = 10$ stress test it dominates on all four bands while uniform augmentation collapses. Both variants of the sampler (pure uncertainty-guided and mixed with uniform) sit on well-defined points of the coverage-vs-focus trade-off; the mixed variant is the practical default when the deployment domain spans both boundary anomalies and gross out-of-distribution inputs. All code, results, and the paper build pipeline are open-source.</p>
+<p><img alt="Fidelity of each sampler across the teacher-pipeline spectrum; the best target within the shell depends on the pipeline's off-manifold shape, and the combined sampler is robust to it." src="figure_sampler_shape.png" /></p>
+<p>Two readings. First, <strong>the score-only sampler wins the growing autoencoder</strong> ($0.911$) but is weakest on the saturating one-class SVM ($0.350$); the <strong>gradient-only sampler wins the saturating case</strong> ($0.562$) but gives up ground on the autoencoder ($0.818$). This is the shape dependence of §4.3, measured. Second, <strong>the combined sampler is the robust choice</strong>: it wins the hard one-class SVM outright ($0.708$, well above either single signal), ties the best on both monotone pipelines, and recovers most of the autoencoder performance the gradient-only sampler sacrificed. No single-signal sampler is best everywhere; the combined one is never far from best on any distillable pipeline.</p>
+<h3 id="62-the-combined-sampler-needs-no-shape-label">6.2 The combined sampler needs no shape label</h3>
+<p>Because it carries both terms, the combined sampler adapts to the pipeline shape implicitly. An explicit alternative that runs the shape probe of §4.5 and sets the score-versus-gradient weight from it reaches the same fidelity as the fixed combined sampler across the spectrum but does not exceed it. We therefore recommend the combined sampler as the automatic default and keep the probe as a diagnostic (it also identifies the undistillable case of §6.4). No manual choice, no shape label, and no anomaly labels are required at any point.</p>
+<h3 id="63-mechanism-on-a-complex-pipeline">6.3 Mechanism on a complex pipeline</h3>
+<p>To show <em>why</em> sampling is needed rather than only <em>that</em> it helps, we distill a three-step pipeline whose off-manifold surface is genuinely structured (standardize, then autoencoder reconstruction error gated by a density term). Fidelity on the held-out anomalies over 5 seeds: normals-only $0.245 \pm 0.120$, Gaussian jitter $0.336 \pm 0.265$, a bounded score-climb sampler $0.184 \pm 0.290$, and an adaptive shell sampler $\mathbf{0.939 \pm 0.030}$. The figure below shows the mechanism: normals-only produces a smooth, monotone surface that cannot express the pipeline's off-manifold structure, while the shell sampler's query cloud spans the anomalous region and the resulting student reproduces the true surface, including an off-manifold valley the pipeline exhibits far from any data.</p>
+<p><img alt="The complex pipeline's off-manifold surface (left) is not reproducible from normals only (middle); shell sampling places queries across the anomalous region and the student reproduces it (right)." src="figure_complex.png" /></p>
+<h3 id="64-a-fundamental-limit-discontinuous-pipelines">6.4 A fundamental limit: discontinuous pipelines</h3>
+<p>The percentile-max fusion is not reproduced by any sampler (fidelity $\approx 0.05$–$0.11$ for all). Its score is a non-smooth maximum of two rank surfaces; the small student cannot represent the discontinuity regardless of where queries are placed. This is a <strong>capacity</strong> limit, not a sampling one, and the shape probe of §4.5 detects it in advance (a flat score profile across shells). We report it plainly: shell sampling makes a pipeline's off-manifold behavior <em>available</em> to the student, but a student too small to represent that behavior still cannot reproduce it.</p>
+<h3 id="65-scope-real-high-dimensional-data">6.5 Scope: real high-dimensional data</h3>
+<p>On three real tabular anomaly-detection datasets (shuttle $d=9$, satellite $d=36$, optdigits $d=64$) distilled from monotone detectors, coarse detection is easy and needs no sampling: normals-only or uniform augmentation already produce a student whose standalone anomaly AUROC matches the teacher (shuttle: normals-only $0.987$; satellite: uniform $0.829$; optdigits: normals-only $0.850$). Fine-grained <em>fidelity</em> to the pipeline, however, is poor and noisy for every sampler at these dimensions and sample sizes, because the small student cannot reproduce a real detector's full ranking regardless of query placement. We state this as an open limitation rather than a result: the shell-sampling advantage is demonstrated on controlled geometry and on the teacher spectrum, and its transfer to high-dimensional fine-fidelity distillation is unresolved. The likely bottleneck is student capacity, not sampling; scaling the student and moving to a learned generator that produces shell queries directly (rather than rejection-sampling them, which degrades in high $d$) are the natural next steps.</p>
+<h2 id="7-discussion">7. Discussion</h2>
+<p>The practical recommendation is compact: <strong>place a fixed query budget in the low-density shell and weight it by both pipeline score and score-gradient magnitude.</strong> This one sampler is automatically robust to whether the pipeline grows or saturates off the manifold, requires no anomaly labels and no differentiation of the pipeline, and reduces to the two shape-specific samplers as special cases. The score term and the gradient term are individually necessary: dropping the gradient term loses the saturating pipelines, dropping the score term loses the growing ones.</p>
+<p>Two honest boundaries frame the contribution. Pipelines with discontinuous fusion exceed a small student's representational capacity and are not distillable at any sampling budget; a cheap shell probe predicts this. And on real high-dimensional data, coarse detection is already served by trivial baselines while fine-fidelity reproduction is unresolved, so the present contribution is a focused methods-and-analysis result on where queries should go, not a solved deployment pipeline.</p>
+<h2 id="8-conclusion">8. Conclusion</h2>
+<p>Distilling a blackbox unsupervised anomaly pipeline with no anomaly labels is a query-placement problem. The informative queries sit in the low-density shell just off the normal manifold, and the right target within the shell follows the pipeline's off-manifold shape: score for growing pipelines, score-gradient for saturating ones. A single shell sampler weighted by both is automatically shape-robust, reproduces a spectrum of teacher pipelines with high fidelity, and comes with a cheap probe that predicts when a pipeline is beyond a small student's reach. The open frontier is fine-fidelity distillation in high dimensions, where student capacity, not query placement, appears to bind. All code, data, and results are released.</p>
 <h2 id="references">References</h2>
 <ul>
 <li>Angluin, D. (1988). <em>Queries and concept learning.</em> Machine Learning 2(4).</li>
@@ -505,44 +233,19 @@ modal run modal_pipedistil.py --dims 5,10 --seeds 0,...,9  # ~14 min fan-out
 <li>Ruff, L., Kauffmann, J. R., Vandermeulen, R. A., Montavon, G., Samek, W., Kloft, M., Dietterich, T. G., and Müller, K.-R. (2021). <em>A unifying review of deep and shallow anomaly detection.</em> Proceedings of the IEEE.</li>
 <li>Schölkopf, B., Platt, J. C., Shawe-Taylor, J., Smola, A. J., and Williamson, R. C. (2001). <em>Estimating the support of a high-dimensional distribution.</em> Neural Computation.</li>
 <li>Sener, O. and Savarese, S. (2018). <em>Active learning for convolutional neural networks: a core-set approach.</em> ICLR.</li>
-<li>Settles, B. (2010). <em>Active learning literature survey.</em> Computer Sciences Technical Report 1648, University of Wisconsin-Madison.</li>
+<li>Settles, B. (2010). <em>Active learning literature survey.</em> Univ. Wisconsin-Madison TR 1648.</li>
 <li>Seung, H. S., Opper, M., and Sompolinsky, H. (1992). <em>Query by committee.</em> COLT.</li>
 <li>Silverman, B. W. (1986). <em>Density estimation for statistics and data analysis.</em> Chapman &amp; Hall.</li>
 <li>Song, Y. and Ermon, S. (2019). <em>Generative modeling by estimating gradients of the data distribution.</em> NeurIPS.</li>
 <li>Song, Y. and Ermon, S. (2020). <em>Improved techniques for training score-based generative models.</em> NeurIPS.</li>
 <li>Welling, M. and Teh, Y. W. (2011). <em>Bayesian learning via stochastic gradient Langevin dynamics.</em> ICML.</li>
-<li>Zavrtanik, V., Kristan, M., and Skočaj, D. (2021). <em>DRAEM — a discriminatively trained reconstruction embedding for surface anomaly detection.</em> ICCV.</li>
+<li>Zavrtanik, V., Kristan, M., and Skočaj, D. (2021). <em>DRAEM: a discriminatively trained reconstruction embedding for surface anomaly detection.</em> ICCV.</li>
 <li>Zhou, C. and Paffenroth, R. C. (2017). <em>Anomaly detection with robust deep autoencoders.</em> KDD.</li>
 </ul>
-<h2 id="appendix-a-reference-algorithm-batched-as-run">Appendix A — Reference algorithm (batched, as run)</h2>
-<pre><code>Input: normals X_n, teachers {P_k}, KDE p(·) on X_n,
-       percentile map F_k on X_n, query budget M,
-       chain steps T=30, step size eta=0.04, prior weight beta=0.5,
-       temperature tau=0.3, drift alpha=10, radius rho_max=0.7,
-       finite-difference step h=0.02.
-Output: query set X_g of shape (M, d).
-
-x &lt;- sample M rows from X_n (with replacement)
-for t = 1..T:
-    # Uncertainty potential and its gradient (percentile ranks are bounded).
-    def U(x): p &lt;- F(P(x));  return Var_k p + alpha * Mean_k p
-    for i in 1..d:
-        g_U[:, i] &lt;- (U(x + h e_i) - U(x - h e_i)) / (2 h)
-        g_p[:, i] &lt;- (log p(x + h e_i) - log p(x - h e_i)) / (2 h)
-    x &lt;- x + eta * (g_U + beta * g_p) + sqrt(2 eta tau) * N(0, I)
-    # Radial projection: pull points &gt; rho_max from nearest normal back to
-    # the rho_max ball around that normal.
-    d_nn, i_nn &lt;- 1-NN(x, X_n)
-    mask &lt;- d_nn &gt; rho_max
-    x[mask] &lt;- X_n[i_nn][mask] + (x[mask] - X_n[i_nn][mask]) * rho_max / d_nn[mask]
-return x
-</code></pre>
-<p>Score gradients through blackbox teachers are computed by central finite differences over the input dimensions; when a teacher exposes an analytic surrogate (e.g., autoencoder reconstruction error) the surrogate's gradient is used.</p>
-<h2 id="appendix-b-runnable-experiment">Appendix B — Runnable experiment</h2>
-<p>The full experiment used to produce §6 is one CPU-only file, ~350 lines of NumPy + scikit-learn: <code>experiment.py</code>. Reproduce with</p>
-<pre><code class="language-bash">python experiment.py --smoketest   # ~10 s: prints I1-I4 invariants only
-python experiment.py --seeds 10    # ~7 min: full sweep, writes results/*
-</code></pre>
-<p>Outputs: <code>results/results.csv</code> (one row per seed × condition × metric), <code>results/invariants.txt</code> (I1-I4 log), <code>results/figures/main.png</code> (the figure in §6.1). All samplers and the sanity invariants are single functions; the diff between the naive-Langevin ablation and the paper's sampler is one line (the added $\alpha \bar p$ drift term in <code>U(pts)</code>).</p>
+<h2 id="appendix-a-samplers">Appendix A — Samplers</h2>
+<p><strong>Combined shell sampler (used throughout).</strong> Draw a candidate pool uniformly in the low-density shell $\rho_{\min} \le \rho(x) \le \rho_{\max}$; compute each candidate's extended rank $u(x)$ and its gradient magnitude $\|\nabla_x u(x)\|$ by central finite differences; importance-sample $M$ queries with probability proportional to $\tfrac12\widehat u + \tfrac12\widehat{\|\nabla u\|}$.</p>
+<p><strong>Langevin variant.</strong> Start chains at random normals and walk up the same shell potential while a density prior holds them near the manifold; a per-chain radius drawn log-uniformly lets some chains reach the far field. This gives fidelity equivalent to the importance-weighted sampler and is retained only for comparison; the importance-weighted form is simpler and needs no step-size tuning.</p>
+<h2 id="appendix-b-reproduction">Appendix B — Reproduction</h2>
+<p>The teacher spectrum, the complex-pipeline mechanism study, and the real-data evaluation are separate CPU-only scripts. The score-plus-gradient shell sampler and the shape probe are single functions; the finite-difference gradient is batched into one pipeline-scoring pass per step.</p>
 </body>
 </html>

@@ -168,20 +168,27 @@ def make_percentile_maps(S_train):
             s_sorted = sorted_scores[k]
             xs = S[:, k]
             base = np.interp(xs, s_sorted, pct_values)
-            # Above training max: extrapolate with top-decile slope.
+            # Above training max: extrapolate with top-decile slope but CAP
+            # at pct=1 + BUFFER. Unbounded extrapolation on heavy-tailed
+            # real-data teacher scores blows the student's targets up and
+            # can invert the AUROC sign; capping keeps the signal ordered
+            # but bounded.
+            BUFFER = 1.0
             above = xs > s_sorted[-1]
             if above.any():
                 idx_lo = max(N - N // 10, 0)
                 dx = max(s_sorted[-1] - s_sorted[idx_lo], 1e-9)
                 dp = pct_values[-1] - pct_values[idx_lo]
-                base[above] = pct_values[-1] + (xs[above] - s_sorted[-1]) * (dp / dx)
+                ext = pct_values[-1] + (xs[above] - s_sorted[-1]) * (dp / dx)
+                base[above] = np.minimum(ext, pct_values[-1] + BUFFER)
             # Below training min: mirror extrapolation.
             below = xs < s_sorted[0]
             if below.any():
                 idx_hi = min(N // 10, N - 1)
                 dx = max(s_sorted[idx_hi] - s_sorted[0], 1e-9)
                 dp = pct_values[idx_hi] - pct_values[0]
-                base[below] = pct_values[0] + (xs[below] - s_sorted[0]) * (dp / dx)
+                ext = pct_values[0] + (xs[below] - s_sorted[0]) * (dp / dx)
+                base[below] = np.maximum(ext, pct_values[0] - BUFFER)
             out[:, k] = base
         return out
     return pct
@@ -206,6 +213,36 @@ def sampler_uniform(X_n, M, rng, box=((-2.0, 3.0), (-1.5, 1.5)), **kw):
     return rng.uniform(lo, hi, size=(M, X_n.shape[1]))
 
 
+def _fd_grads(x, e_basis, h, teachers, pct_map, alpha_mean, d, M):
+    """Central finite-difference gradients of the uncertainty potential U and
+    the KDE log-density, computed in ONE batched teacher-scoring pass.
+
+    Stacks all 2*d perturbations (x +/- h*e_i for every dimension i) into one
+    (2*d*M, d) array, scores every teacher once, and reshapes. The KDE
+    log-density is read off column 0 for free: score_batch's first teacher is
+    s_kde = -kde.score_samples, so log_p = -S[:, 0]. This is bit-identical to
+    the per-dimension loop it replaces (KDE/IsolationForest/kNN and pct_map are
+    all row-independent), while cutting 2*d score_batch calls + 2*d redundant
+    KDE passes per step down to a single stacked scoring.
+
+    Returns (gU, gp), each shape (M, d), matching the old gU[:, i] / gp[:, i].
+    """
+    # P[0, i] = x + h*e_i ; P[1, i] = x - h*e_i  -> shape (2, d, M, d)
+    P = np.empty((2, d, M, d))
+    P[0] = x[None, :, :] + e_basis[:, None, :]
+    P[1] = x[None, :, :] - e_basis[:, None, :]
+    flat = P.reshape(2 * d * M, d)
+
+    S = score_batch(teachers, flat)                       # (2*d*M, K)
+    Z = pct_map(S)
+    Uf = (Z.var(axis=1) + alpha_mean * Z.mean(axis=1)).reshape(2, d, M)
+    lp = (-S[:, 0]).reshape(2, d, M)                       # log p = -s_kde
+
+    gU = ((Uf[0] - Uf[1]) / (2 * h)).T                    # (M, d)
+    gp = ((lp[0] - lp[1]) / (2 * h)).T                    # (M, d)
+    return gU, gp
+
+
 def sampler_langevin(
     X_n, M, rng, *, teachers, mu, sigma, kde, pct_map,
     T=30, eta=0.04, beta=0.5, tau=0.3, h=0.02, max_dist=0.7, alpha_mean=10.0,
@@ -224,18 +261,6 @@ def sampler_langevin(
     d = x.shape[1]
     nn = NearestNeighbors(n_neighbors=1).fit(X_n)
 
-    def U(pts):
-        # Percentile-normalized teacher scores in [0, 1] per teacher.
-        # Uncertainty potential = inter-teacher disagreement PLUS a term that
-        # pulls the walk toward higher fused-score regions (the decision
-        # boundary), so the queries do not collapse onto the normal manifold
-        # where every teacher agrees "this is normal but slightly different".
-        Z = pct_map(score_batch(teachers, pts))
-        return Z.var(axis=1) + alpha_mean * Z.mean(axis=1)
-
-    def log_p(pts):
-        return kde.score_samples(pts)      # (n,)
-
     def project(pts):
         """Radial projection back to a max_dist ball around nearest normal."""
         dist, idx_nn = nn.kneighbors(pts)
@@ -251,14 +276,14 @@ def sampler_langevin(
 
     e_basis = np.eye(d) * h
 
+    # Batched central finite differences: instead of 2*d separate score_batch
+    # calls per step (plus 2*d redundant kde.score_samples for the log-density
+    # prior), stack all 2*d perturbed point sets into ONE array, score every
+    # teacher once, and read log p off the KDE column for free (s_kde ==
+    # -kde.score_samples, so log_p = -S[:, 0]). Output is bit-identical to the
+    # per-dimension loop; see the module-level _langevin_step helper.
     for _ in range(T):
-        gU = np.zeros_like(x)
-        gp = np.zeros_like(x)
-        for i in range(d):
-            xp = x + e_basis[i]
-            xm = x - e_basis[i]
-            gU[:, i] = (U(xp) - U(xm)) / (2 * h)
-            gp[:, i] = (log_p(xp) - log_p(xm)) / (2 * h)
+        gU, gp = _fd_grads(x, e_basis, h, teachers, pct_map, alpha_mean, d, M)
         noise = rng.normal(size=x.shape)
         x = x + eta * (gU + beta * gp) + np.sqrt(2 * eta * tau) * noise
         x = project(x)
@@ -313,13 +338,6 @@ def sampler_langevin_adaptive(
     dirs /= (np.linalg.norm(dirs, axis=1, keepdims=True) + 1e-12)
     x = anchors0 + dirs * rho_per[:, None]
 
-    def U(pts):
-        Z = pct_map(score_batch(teachers, pts))
-        return Z.var(axis=1) + alpha_mean * Z.mean(axis=1)
-
-    def log_p(pts):
-        return kde.score_samples(pts)
-
     def project(pts):
         dist, idx_nn = nn.kneighbors(pts)
         dist = dist[:, 0]
@@ -340,13 +358,7 @@ def sampler_langevin_adaptive(
 
     e_basis = np.eye(d) * h
     for _ in range(T):
-        gU = np.zeros_like(x)
-        gp = np.zeros_like(x)
-        for i in range(d):
-            xp = x + e_basis[i]
-            xm = x - e_basis[i]
-            gU[:, i] = (U(xp) - U(xm)) / (2 * h)
-            gp[:, i] = (log_p(xp) - log_p(xm)) / (2 * h)
+        gU, gp = _fd_grads(x, e_basis, h, teachers, pct_map, alpha_mean, d, M)
         noise = rng.normal(size=x.shape)
         x = x + eta * (gU + beta_per[:, None] * gp) + np.sqrt(2 * eta * tau) * noise
         x = project(x)

@@ -1,0 +1,40 @@
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable.It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 24.2 -> 26.2.1
+[notice] To update, run: python -m pip install --upgrade pip
+[train] GPU: (CPU-only workload, no GPU used)
+[train] Loading model...
+[train] Model loaded: PipeDistil-real (samplers x 15 shards)
+[train] Starting work...
+[train]   dispatching 15 shards over 15 workers
+multiprocessing.pool.RemoteTraceback: 
+"""
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/multiprocessing/pool.py", line 125, in worker
+    result = (True, func(*args, **kwds))
+                    ^^^^^^^^^^^^^^^^^^^
+  File "/root/data/runpod_driver.py", line 35, in _worker
+    rows = run_shard(dataset, seed, M=M_QUERIES)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/data/experiment_real.py", line 113, in run_shard
+    X_train, X_val, X_anom = load_dataset(dataset, seed=seed)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/data/experiment_real.py", line 50, in load_dataset
+    d = np.load(DATA_DIR / DATASETS[name])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/numpy/lib/_npyio_impl.py", line 454, in load
+    fid = stack.enter_context(open(os.fspath(file), "rb"))
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/root/data/data/adbench/26_optdigits.npz'
+"""
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/root/data/runpod_driver.py", line 69, in <module>
+    main()
+  File "/root/data/runpod_driver.py", line 54, in main
+    for i, rows in enumerate(pool.imap_unordered(_worker, shards), start=1):
+  File "/usr/lib/python3.11/multiprocessing/pool.py", line 873, in next
+    raise value
+FileNotFoundError: [Errno 2] No such file or directory: '/root/data/data/adbench/26_optdigits.npz'

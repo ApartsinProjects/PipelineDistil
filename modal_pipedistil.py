@@ -23,11 +23,14 @@ RESULTS_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------------------------
 # Image: slim CPU-only python + our two source files
 # ---------------------------------------------------------------------------
+_datasets_dir = HERE / "data" / "adbench"
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install("numpy==2.2.6", "scipy==1.17.1", "scikit-learn==1.8.0")
     .add_local_file(str(HERE / "experiment.py"), "/app/experiment.py")
     .add_local_file(str(HERE / "experiment_highd.py"), "/app/experiment_highd.py")
+    .add_local_file(str(HERE / "experiment_real.py"), "/app/experiment_real.py")
+    .add_local_dir(str(_datasets_dir), "/app/data/adbench")
 )
 
 app = modal.App("pipedistil-sweep", image=image)
@@ -106,6 +109,23 @@ def run_shard(d: int, seed: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Local entrypoint: fan out over (d, seed) pairs, aggregate to CSV
 # ---------------------------------------------------------------------------
+@app.function(
+    timeout=3600,
+    memory=8192,
+    cpu=2.0,
+    volumes={"/results": results_vol},
+)
+def run_real_shard(dataset: str, seed: int) -> list[dict]:
+    """Run all 6 samplers on one (dataset, seed) of real ADBench data."""
+    import sys, time
+    sys.path.insert(0, "/app")
+    from experiment_real import run_shard
+    t = time.time()
+    rows = run_shard(dataset, seed, M=1500)
+    print(f"[{dataset} seed={seed}] DONE, {len(rows)} rows, {time.time()-t:.1f}s", flush=True)
+    return rows
+
+
 @app.local_entrypoint()
 def main(dims: str = "5,10", seeds: str = "0,1,2,3,4,5,6,7,8,9"):
     dim_list  = [int(s) for s in dims.split(",")]
@@ -121,10 +141,35 @@ def main(dims: str = "5,10", seeds: str = "0,1,2,3,4,5,6,7,8,9"):
     print(f"[main] all shards complete in {time.time() - t0:.1f}s; "
           f"{len(all_rows)} rows total", flush=True)
 
-    # Write aggregated CSV in the same format experiment_highd.py uses.
     out_csv = RESULTS_DIR / "results.csv"
     with out_csv.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["d", "seed", "cond", "metric", "value"])
         w.writeheader()
         w.writerows(all_rows)
     print(f"[main] wrote {out_csv} ({len(all_rows)} rows)", flush=True)
+
+
+@app.local_entrypoint()
+def real(datasets: str = "shuttle,satellite", seeds: str = "0,1,2,3,4"):
+    ds_list   = [x.strip() for x in datasets.split(",") if x.strip()]
+    seed_list = [int(s) for s in seeds.split(",")]
+    shards    = [(d, s) for d in ds_list for s in seed_list]
+    print(f"[main-real] {len(shards)} shards: datasets={ds_list} seeds={seed_list}", flush=True)
+
+    out_dir = HERE / "results_real"
+    out_dir.mkdir(exist_ok=True)
+
+    t0 = time.time()
+    all_rows: list[dict] = []
+    for shard_rows in run_real_shard.starmap(shards):
+        if shard_rows:
+            all_rows.extend(shard_rows)
+    print(f"[main-real] all shards complete in {time.time()-t0:.1f}s; "
+          f"{len(all_rows)} rows total", flush=True)
+
+    out_csv = out_dir / "results.csv"
+    with out_csv.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["dataset", "d", "seed", "cond", "metric", "value"])
+        w.writeheader()
+        w.writerows(all_rows)
+    print(f"[main-real] wrote {out_csv} ({len(all_rows)} rows)", flush=True)

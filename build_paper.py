@@ -17,15 +17,15 @@ from pathlib import Path
 import markdown
 
 ROOT = Path(__file__).resolve().parent
-SRC = ROOT / "paper_uncertainty_sag_kd.md"
+SRC = ROOT / "paper_shell_sampling.md"
 HTML_OUT = ROOT / "paper.html"
 DOCX_OUT = ROOT / "paper.docx"
 HTML2DOC = Path(r"C:\Users\apart\.claude\skills\html2doc")
 
-TITLE = ("Uncertainty-Guided Sampling for Unsupervised Distillation "
-         "of Blackbox Anomaly-Detection Pipelines")
+TITLE = ("Where to Query a Blackbox Anomaly Pipeline: "
+         "Shell Sampling for Label-Free Distillation")
 AUTHOR_HTML = ('<p class="authors">Alexander Apartsin</p>'
-               '<p class="affil">Independent research draft, 2026-08-28</p>')
+               '<p class="affil">Independent research draft, 2026-08-29</p>')
 
 STYLE = """
 :root{
@@ -269,8 +269,12 @@ def canaries():
     both figures embedded (checked by presence of img tags in HTML)."""
     html_txt = HTML_OUT.read_text(encoding="utf-8")
     assert "paper.docx" in html_txt, "HTML does not link the DOCX"
-    for fig in ("figure_main.png", "figure_dimscaling.png"):
+    for fig in ("figure_sampler_shape.png", "figure_complex.png"):
         assert fig in html_txt, f"HTML missing reference to {fig}"
+    import re as _re
+    for banned in (r"\bSAG\b", r"\bSafeRide\b", r"\bgap filling\b",
+                   r"\bsynthetic anomaly generation\b", r"\bcovariate shift\b"):
+        assert not _re.search(banned, html_txt, _re.IGNORECASE), f"deck term leaked: {banned}"
     assert DOCX_OUT.exists() and DOCX_OUT.stat().st_size > 10_000, \
         f"DOCX missing or too small: {DOCX_OUT}"
     print("[canaries] all pass")
