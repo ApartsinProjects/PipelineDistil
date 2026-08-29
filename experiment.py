@@ -141,17 +141,48 @@ def znorm_clip(S, mu, sigma, clip=3.0):
 
 
 def make_percentile_maps(S_train):
-    """Return one callable per teacher that maps raw score -> percentile in
-    [0, 1] via linear interpolation of the training normals' sorted scores.
-    Percentile is a scale-free, bounded per-teacher signal: variance across
-    teachers then measures genuine inter-detector disagreement, not scale."""
+    """Return one callable per teacher that maps raw score -> percentile via
+    linear interpolation of the training normals' sorted scores, with linear
+    EXTRAPOLATION beyond the training range using the top / bottom decile slope.
+
+    Rationale: the naive `searchsorted / N` map ties every raw score exceeding
+    the training max at percentile = 1.0 exactly. In an anomaly-detection
+    setting this collapses the entire far-field into a single value, ruining
+    both fusion (mean of ties) and the AUROC evaluation (many normals also tie
+    at 1.0 by construction). Extrapolating past the max using the top-decile
+    slope gives values > 1.0 that preserve ordering among super-anomalies.
+
+    Output is in (~0, ~1) for in-range points and may exceed 1 (or go negative)
+    for out-of-range extremes. Variance and mean of these values still act as
+    scale-free per-teacher signals for the uncertainty potential.
+    """
     K = S_train.shape[1]
     sorted_scores = [np.sort(S_train[:, k]) for k in range(K)]
+    N = sorted_scores[0].shape[0]
+    # Weibull-style plotting positions: no ties at 0 or 1 for in-range points.
+    pct_values = np.arange(1, N + 1) / (N + 1)
+
     def pct(S):
-        # S: (n, K) -> (n, K) in [0, 1]
-        out = np.zeros_like(S)
+        out = np.zeros_like(S, dtype=float)
         for k in range(S.shape[1]):
-            out[:, k] = np.searchsorted(sorted_scores[k], S[:, k]) / len(sorted_scores[k])
+            s_sorted = sorted_scores[k]
+            xs = S[:, k]
+            base = np.interp(xs, s_sorted, pct_values)
+            # Above training max: extrapolate with top-decile slope.
+            above = xs > s_sorted[-1]
+            if above.any():
+                idx_lo = max(N - N // 10, 0)
+                dx = max(s_sorted[-1] - s_sorted[idx_lo], 1e-9)
+                dp = pct_values[-1] - pct_values[idx_lo]
+                base[above] = pct_values[-1] + (xs[above] - s_sorted[-1]) * (dp / dx)
+            # Below training min: mirror extrapolation.
+            below = xs < s_sorted[0]
+            if below.any():
+                idx_hi = min(N // 10, N - 1)
+                dx = max(s_sorted[idx_hi] - s_sorted[0], 1e-9)
+                dp = pct_values[idx_hi] - pct_values[0]
+                base[below] = pct_values[0] + (xs[below] - s_sorted[0]) * (dp / dx)
+            out[:, k] = base
         return out
     return pct
 

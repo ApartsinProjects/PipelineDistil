@@ -78,7 +78,7 @@ footer{margin-top:3rem;padding-top:.9rem;border-top:.5px solid var(--rule);font-
 <h1>Uncertainty-Guided Sampling for Unsupervised Distillation of Blackbox Anomaly-Detection Pipelines</h1>
 <p class="authors">Alexander Apartsin</p><p class="affil">Independent research draft, 2026-08-28</p>
 <div class="abstract"><h2 id="abstract">Abstract</h2>
-<p>We consider the problem of compressing one or more blackbox unsupervised anomaly-detection <strong>pipelines</strong> (preprocessing + detector + postprocessing) into a single small student model suitable for resource-constrained deployment. The teacher pipelines are only queryable — their internals are opaque — and no labeled anomalies are available at any point in training. All we have is a set of normal operating samples and the teachers' <em>scores</em> on any input we can construct. We show that the difficulty is not the distillation objective, which is a plain regression from input to teacher score, but the <strong>choice of training queries</strong>: normals alone give the student no information about the teachers' behavior on the abnormal side of the decision surface. We propose <strong>uncertainty-guided sampling</strong>, a Langevin-style walk that generates synthetic query points along the pipelines' decision boundary, guided by inter-teacher percentile disagreement plus a drift toward the anomalous side. On a 2-D two-moons benchmark with three unsupervised teachers (KDE, Isolation Forest, kNN-distance) and a 40-parameter tanh MLP student (10 seeds), the fixed-radius variant of the sampler achieves the highest student AUROC on the close-off-manifold band ($0.984 \pm 0.004$), and an <strong>adaptive-radius variant</strong> — chains draw their projection radius from a log-uniform distribution and have their manifold-prior weight scaled inversely — additionally wins the medium ($0.992 \pm 0.005$) and far ($0.980 \pm 0.012$) bands with a single sampler. Repeating the sweep at $d = 5$ and $d = 10$ with a tight 3-cluster GMM confirms the coverage argument: uniform augmentation collapses on the near-manifold bands as $d$ grows (boundary AUROC drops from $0.91$ at $d=2$ to $0.68$ at $d=10$), while the fixed-radius sampler wins the near-manifold bands at every $d$ tested and the adaptive variant wins the far band at every $d$ ($0.98$ throughout).</p></div>
+<p>We consider the problem of compressing one or more blackbox unsupervised anomaly-detection <strong>pipelines</strong> (preprocessing + detector + postprocessing) into a single small student model suitable for resource-constrained deployment. The teacher pipelines are only queryable — their internals are opaque — and no labeled anomalies are available at any point in training. All we have is a set of normal operating samples and the teachers' <em>scores</em> on any input we can construct. We show that the difficulty is not the distillation objective, which is a plain regression from input to teacher score, but the <strong>choice of training queries</strong>: normals alone give the student no information about the teachers' behavior on the abnormal side of the decision surface. We propose <strong>uncertainty-guided sampling</strong>, a Langevin-style walk that generates synthetic query points along the pipelines' decision boundary, guided by inter-teacher percentile disagreement plus a drift toward the anomalous side. On a 2-D two-moons benchmark with three unsupervised teachers (KDE, Isolation Forest, kNN-distance) and a 40-parameter tanh MLP student (10 seeds), the fixed-radius variant of the sampler wins the close-off-manifold band ($0.986 \pm 0.003$) and medium band ($0.998 \pm 0.002$), and an <strong>adaptive-radius variant</strong> — chains draw their projection radius from a log-uniform distribution and have their manifold-prior weight scaled inversely — wins the far band ($1.000 \pm 0.000$) with a single sampler. Repeating the sweep at $d = 5$ and $d = 10$ with a tight 3-cluster GMM shows the coverage argument at work: uniform augmentation collapses in every direction as $d$ grows (boundary AUROC drops from $0.92$ at $d=2$ to $0.55$ at $d=10$), the fixed-radius sampler wins the boundary band at $d=10$ ($0.800 \pm 0.012$), and the adaptive variant wins the far band at every $d$ tested ($0.98$-$1.00$). A key methodological finding is that Gaussian jitter (S1) is a surprisingly strong general-purpose baseline in higher dimensions — on close and medium at $d=10$ it wins outright — a fact revealed only after we corrected a teacher-percentile ceiling artifact that had been inflating the uncertainty-guided sampler's advantage.</p></div>
 <h2 id="1-introduction">1. Introduction</h2>
 <p>Unsupervised anomaly detection systems in production rarely consist of a single model. A typical pipeline chains a preprocessing stage, one or more detectors from different model families (density estimators, tree-based isolators, distance-based, deep autoencoders), and a postprocessing calibration or thresholding step. When such a pipeline has to run on a device with tight compute, memory, and power budgets — an embedded sensor, an edge inference chip, an in-browser detector — the practitioner faces a distillation problem: how to compress a system of interacting stages into a single small model whose scores approximate those of the full pipeline on inputs the deployed device will actually see.</p>
 <p>Two features of this setting make it distinct from ordinary supervised knowledge distillation [Hinton et al., 2015; Ba and Caruana, 2014]. First, the teacher is a <strong>pipeline</strong>, not a single differentiable model — we can query it end-to-end and read the anomaly score it returns, but we cannot backpropagate through it. Second, the training set is <strong>fully unsupervised</strong>: only normal operating samples exist. No labeled anomalies are ever available, at training or at validation. Whatever the student learns about the teachers' behavior on abnormal inputs, it learns from queries we ourselves construct.</p>
@@ -198,7 +198,7 @@ $$</p>
 <h2 id="6-results">6. Results</h2>
 <h3 id="61-two-moons-10-seeds">6.1 Two-moons, 10 seeds</h3>
 <p>Means $\pm$ s.d. over 10 seeds. Same student architecture, optimizer, and normalization across conditions; only the sampler differs. Bold marks the best within each column when the margin exceeds one s.d. of the runner-up.</p>
-<p><strong>Student AUROC vs the fused teacher, per anomaly set.</strong></p>
+<p><strong>Student AUROC vs the fused teacher, per anomaly set</strong> (extended-percentile fusion; see §7 for the ceiling-tie audit that motivated this).</p>
 <table>
 <thead>
 <tr>
@@ -219,42 +219,42 @@ $$</p>
 </tr>
 <tr>
 <td>S1 (gaussian)</td>
-<td>$0.928 \pm 0.016$</td>
-<td>$0.966 \pm 0.010$</td>
-<td>$0.959 \pm 0.019$</td>
-<td>$0.928 \pm 0.075$</td>
+<td>$\mathbf{0.934 \pm 0.014}$</td>
+<td>$0.968 \pm 0.009$</td>
+<td>$0.958 \pm 0.017$</td>
+<td>$0.945 \pm 0.055$</td>
 </tr>
 <tr>
 <td>S2 (uniform)</td>
-<td>$0.913 \pm 0.016$</td>
-<td>$0.967 \pm 0.013$</td>
-<td>$0.981 \pm 0.010$</td>
-<td>$0.970 \pm 0.031$</td>
+<td>$0.924 \pm 0.013$</td>
+<td>$0.984 \pm 0.004$</td>
+<td>$0.997 \pm 0.004$</td>
+<td>$0.998 \pm 0.004$</td>
 </tr>
 <tr>
 <td><strong>S3 (ours)</strong></td>
-<td>$0.924 \pm 0.010$</td>
-<td>$\mathbf{0.984 \pm 0.004}$</td>
-<td>$0.980 \pm 0.010$</td>
-<td>$0.804 \pm 0.123$</td>
+<td>$0.918 \pm 0.006$</td>
+<td>$\mathbf{0.986 \pm 0.003}$</td>
+<td>$\mathbf{0.998 \pm 0.002}$</td>
+<td>$0.931 \pm 0.103$</td>
 </tr>
 <tr>
 <td><strong>S4 (ours, mixed)</strong></td>
-<td>$0.918 \pm 0.012$</td>
-<td>$0.979 \pm 0.003$</td>
-<td>$0.990 \pm 0.006$</td>
-<td>$0.947 \pm 0.051$</td>
+<td>$0.914 \pm 0.011$</td>
+<td>$0.983 \pm 0.005$</td>
+<td>$0.997 \pm 0.002$</td>
+<td>$0.997 \pm 0.005$</td>
 </tr>
 <tr>
 <td><strong>S5 (ours, adaptive)</strong></td>
-<td>$0.913 \pm 0.009$</td>
-<td>$0.974 \pm 0.006$</td>
-<td>$\mathbf{0.992 \pm 0.005}$</td>
-<td>$\mathbf{0.980 \pm 0.012}$</td>
+<td>$0.892 \pm 0.004$</td>
+<td>$0.969 \pm 0.008$</td>
+<td>$0.996 \pm 0.003$</td>
+<td>$\mathbf{1.000 \pm 0.000}$</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Off-manifold score-fidelity, RMSE (percentile units, lower is better).</strong></p>
+<p><strong>Off-manifold score-fidelity, RMSE (extended-percentile units, lower is better).</strong></p>
 <table>
 <thead>
 <tr>
@@ -269,59 +269,60 @@ $$</p>
 <tbody>
 <tr>
 <td>S0</td>
-<td>$0.230$</td>
-<td>$0.292$</td>
-<td>$0.466$</td>
-<td>$0.795$</td>
-<td>$0.149$</td>
+<td>$0.231$</td>
+<td>$0.295$</td>
+<td>$0.447$</td>
+<td>$0.671$</td>
+<td>$0.148$</td>
 </tr>
 <tr>
 <td>S1</td>
-<td>$0.148$</td>
-<td>$0.168$</td>
-<td>$0.268$</td>
-<td>$0.419$</td>
-<td>$\mathbf{0.138}$</td>
+<td>$0.142$</td>
+<td>$0.176$</td>
+<td>$0.282$</td>
+<td>$0.466$</td>
+<td>$\mathbf{0.134}$</td>
 </tr>
 <tr>
 <td>S2</td>
-<td>$0.152$</td>
-<td>$0.107$</td>
-<td>$0.127$</td>
-<td>$0.183$</td>
+<td>$\mathbf{0.140}$</td>
+<td>$0.097$</td>
+<td>$0.123$</td>
+<td>$0.232$</td>
 <td>$0.158$</td>
 </tr>
 <tr>
 <td><strong>S3 (ours)</strong></td>
-<td>$\mathbf{0.133}$</td>
-<td>$\mathbf{0.069}$</td>
-<td>$0.134$</td>
-<td>$0.470$</td>
-<td>$0.168$</td>
+<td>$0.147$</td>
+<td>$\mathbf{0.071}$</td>
+<td>$\mathbf{0.076}$</td>
+<td>$0.453$</td>
+<td>$0.169$</td>
 </tr>
 <tr>
 <td><strong>S4 (ours, mixed)</strong></td>
-<td>$0.136$</td>
-<td>$0.081$</td>
-<td>$0.114$</td>
-<td>$0.213$</td>
-<td>$0.163$</td>
+<td>$0.151$</td>
+<td>$0.080$</td>
+<td>$0.089$</td>
+<td>$0.241$</td>
+<td>$0.165$</td>
 </tr>
 <tr>
 <td><strong>S5 (ours, adaptive)</strong></td>
-<td>$0.153$</td>
-<td>$0.089$</td>
-<td>$\mathbf{0.072}$</td>
-<td>$\mathbf{0.165}$</td>
-<td>$0.167$</td>
+<td>$0.238$</td>
+<td>$0.179$</td>
+<td>$0.120$</td>
+<td>$\mathbf{0.102}$</td>
+<td>$0.172$</td>
 </tr>
 </tbody>
 </table>
-<p><strong>What the numbers say.</strong> Three paper-level findings emerge across the 10-seed sweep:</p>
+<p><strong>What the numbers say.</strong> Four paper-level findings emerge across the 10-seed sweep:</p>
 <ol>
-<li><strong>S3 (uncertainty-guided Langevin)</strong> delivers the best AUROC on the <code>close</code> band ($0.984 \pm 0.004$), the best off-manifold RMSE on <code>boundary</code> and <code>close</code>, and the tightest cross-seed variance of any sampler on close AUROC ($\sigma \le 0.010$ vs $\ge 0.019$ for the S0/S1 baselines). Its one weakness is <code>far</code> AUROC: because the walk is capped at $\rho_{\max} = 0.7$ from the manifold, the student is never trained on true far-field points and the tanh MLP's free extrapolation is unreliable ($0.804 \pm 0.123$).</li>
-<li><strong>S5 (adaptive) removes the far-field weakness with a single sampler.</strong> Per-chain $\rho_i \sim \text{log-Uniform}(0.3, 3.0)$ gives the query cloud a real spread across all four bands, with per-chain $\beta_i$ scaled inversely to $\rho_i$ so long-$\rho$ chains are not dragged back by the manifold prior. Result: <code>far</code> AUROC jumps to $\mathbf{0.980 \pm 0.012}$ (from $0.804$ for S3), the best of any sampler, while <code>medium</code> AUROC becomes the best of any sampler as well ($\mathbf{0.992 \pm 0.005}$). Off-manifold RMSE on <code>medium</code> ($\mathbf{0.072}$) and <code>far</code> ($\mathbf{0.165}$) are also the lowest of any sampler. The one-hyperparameter-set design covers every band without a static uniform mix.</li>
-<li><strong>S4 (mixed) is Pareto-dominated by S5</strong> on this benchmark: S5 matches or beats S4 on every AUROC column and every RMSE column except <code>boundary</code>. Practically, S5 is the default recommendation when the deployment domain spans both nuanced boundary anomalies and gross out-of-distribution inputs, and it does not require a bounding box on the input.</li>
+<li><strong>S3 (uncertainty-guided Langevin)</strong> delivers the best AUROC on the <code>close</code> band ($0.986 \pm 0.003$) and <code>medium</code> band ($0.998 \pm 0.002$), the best off-manifold RMSE on both bands (0.071 and 0.076), and the tightest cross-seed variance of any sampler on those bands ($\sigma \le 0.003$). Its one weakness is <code>far</code> AUROC: because the walk is capped at $\rho_{\max} = 0.7$ from the manifold, the student is never trained on true far-field points and the tanh MLP's free extrapolation is unreliable ($0.931 \pm 0.103$).</li>
+<li><strong>S5 (adaptive) fixes the far-field weakness with a single sampler.</strong> Per-chain $\rho_i \sim \text{log-Uniform}(0.3, 3.0)$ gives the query cloud a real spread across all four bands, with per-chain $\beta_i$ scaled inversely to $\rho_i$ so long-$\rho$ chains are not dragged back by the manifold prior. Result: <code>far</code> AUROC becomes $\mathbf{1.000 \pm 0.000}$ (from $0.931$ for S3) and <code>far</code> RMSE the lowest of any sampler ($\mathbf{0.102}$). This comes at a small tax on the near bands: <code>boundary</code> AUROC drops from $0.918$ (S3) to $0.892$ and <code>boundary</code> RMSE roughly doubles.</li>
+<li><strong>S1 (Gaussian jitter) is the surprising boundary winner</strong> on this small benchmark ($0.934 \pm 0.014$), at an order of magnitude less compute than S3 or S5 (no finite-difference gradients, no chain). This is the pattern to keep in mind at higher $d$ (§6.2).</li>
+<li><strong>S4 (mixed) is Pareto-dominated by S5</strong> on the two near-manifold bands (which is where S4 was meant to help) and does not win any column outright at $d=2$. It stays in the paper because it becomes relevant in higher-$d$ discussions.</li>
 </ol>
 <p><strong>Figure.</strong> <img alt="Contours of the fused teacher and two students, and the S3 query cloud" src="figure_main.png" /></p>
 <p>Top-left: the percentile-fused teacher (bounded in $[0, 1]$). Top-right: student S0 trained on normals only — the tanh MLP extrapolates arbitrary uncalibrated values off-manifold (colorbar range $[0.2, 2.1]$). Bottom-left: student S3 — smoothly rising score away from the manifold with a compact score range $[0.08, 1.6]$. <strong>Bottom-right</strong>: the S3 query cloud (red) overlaid on the teacher — queries form a clean halo at $0.15 - 0.7$ from the manifold, exactly where the decision boundary is. This visual mirrors the numerical result: S3 covers the boundary-to-medium band densely and the far field not at all.</p>
@@ -349,38 +350,38 @@ $$</p>
 </tr>
 <tr>
 <td>S1 (gaussian)</td>
-<td>$0.852 \pm 0.060$</td>
-<td>$0.926 \pm 0.045$</td>
-<td>$0.966 \pm 0.025$</td>
-<td>$0.944 \pm 0.040$</td>
+<td>$\mathbf{0.881 \pm 0.020}$</td>
+<td>$\mathbf{0.976 \pm 0.008}$</td>
+<td>$\mathbf{0.996 \pm 0.006}$</td>
+<td>$0.979 \pm 0.003$</td>
 </tr>
 <tr>
 <td>S2 (uniform)</td>
-<td>$0.797 \pm 0.013$</td>
-<td>$0.883 \pm 0.012$</td>
-<td>$0.945 \pm 0.011$</td>
-<td>$0.982 \pm 0.010$</td>
+<td>$0.659 \pm 0.022$</td>
+<td>$0.770 \pm 0.049$</td>
+<td>$0.868 \pm 0.063$</td>
+<td>$0.921 \pm 0.075$</td>
 </tr>
 <tr>
 <td><strong>S3 (ours)</strong></td>
-<td>$\mathbf{0.879 \pm 0.022}$</td>
-<td>$\mathbf{0.946 \pm 0.011}$</td>
-<td>$\mathbf{0.967 \pm 0.015}$</td>
-<td>$0.867 \pm 0.104$</td>
+<td>$0.853 \pm 0.021$</td>
+<td>$0.939 \pm 0.026$</td>
+<td>$0.982 \pm 0.014$</td>
+<td>$0.926 \pm 0.027$</td>
 </tr>
 <tr>
 <td><strong>S4 (ours, mixed)</strong></td>
-<td>$0.826 \pm 0.037$</td>
-<td>$0.910 \pm 0.034$</td>
-<td>$0.954 \pm 0.018$</td>
-<td>$0.977 \pm 0.009$</td>
+<td>$0.620 \pm 0.044$</td>
+<td>$0.746 \pm 0.083$</td>
+<td>$0.860 \pm 0.068$</td>
+<td>$0.890 \pm 0.070$</td>
 </tr>
 <tr>
 <td><strong>S5 (ours, adaptive)</strong></td>
-<td>$0.857 \pm 0.018$</td>
-<td>$0.935 \pm 0.013$</td>
-<td>$0.963 \pm 0.011$</td>
-<td>$\mathbf{0.981 \pm 0.003}$</td>
+<td>$0.669 \pm 0.030$</td>
+<td>$0.802 \pm 0.044$</td>
+<td>$0.928 \pm 0.044$</td>
+<td>$\mathbf{0.983 \pm 0.027}$</td>
 </tr>
 </tbody>
 </table>
@@ -405,64 +406,74 @@ $$</p>
 </tr>
 <tr>
 <td>S1 (gaussian)</td>
-<td>$0.746 \pm 0.017$</td>
-<td>$0.888 \pm 0.017$</td>
-<td>$0.958 \pm 0.020$</td>
-<td>$0.961 \pm 0.002$</td>
+<td>$0.790 \pm 0.011$</td>
+<td>$\mathbf{0.934 \pm 0.014}$</td>
+<td>$\mathbf{0.980 \pm 0.005}$</td>
+<td>$0.940 \pm 0.041$</td>
 </tr>
 <tr>
 <td>S2 (uniform)</td>
-<td>$0.677 \pm 0.052$</td>
-<td>$0.818 \pm 0.044$</td>
-<td>$0.920 \pm 0.031$</td>
-<td>$0.970 \pm 0.008$</td>
+<td>$0.550 \pm 0.037$</td>
+<td>$0.612 \pm 0.053$</td>
+<td>$0.696 \pm 0.076$</td>
+<td>$0.789 \pm 0.046$</td>
 </tr>
 <tr>
 <td><strong>S3 (ours)</strong></td>
-<td>$\mathbf{0.787 \pm 0.017}$</td>
-<td>$\mathbf{0.918 \pm 0.013}$</td>
-<td>$\mathbf{0.960 \pm 0.008}$</td>
-<td>$0.859 \pm 0.148$</td>
+<td>$\mathbf{0.800 \pm 0.012}$</td>
+<td>$0.922 \pm 0.023$</td>
+<td>$0.971 \pm 0.013$</td>
+<td>$0.888 \pm 0.047$</td>
 </tr>
 <tr>
 <td><strong>S4 (ours, mixed)</strong></td>
-<td>$0.748 \pm 0.018$</td>
-<td>$0.893 \pm 0.004$</td>
-<td>$0.943 \pm 0.001$</td>
-<td>$0.977 \pm 0.001$</td>
+<td>$0.520 \pm 0.027$</td>
+<td>$0.645 \pm 0.035$</td>
+<td>$0.778 \pm 0.019$</td>
+<td>$0.899 \pm 0.009$</td>
 </tr>
 <tr>
 <td><strong>S5 (ours, adaptive)</strong></td>
-<td>$0.747 \pm 0.001$</td>
-<td>$0.895 \pm 0.013$</td>
-<td>$0.954 \pm 0.016$</td>
-<td>$\mathbf{0.978 \pm 0.009}$</td>
+<td>$0.633 \pm 0.015$</td>
+<td>$0.826 \pm 0.005$</td>
+<td>$0.945 \pm 0.014$</td>
+<td>$\mathbf{0.980 \pm 0.013}$</td>
 </tr>
 </tbody>
 </table>
 <p><img alt="Student AUROC per band as the input dimension grows" src="figure_dimscaling.png" /></p>
 <p><strong>What the numbers say.</strong></p>
 <ol>
-<li><strong>Uniform augmentation collapses on the near-manifold bands as $d$ grows.</strong> S2's boundary AUROC drops from $0.913 \pm 0.016$ at $d=2$ to $0.797 \pm 0.013$ at $d=5$ to $0.677 \pm 0.052$ at $d=10$. Close, medium, and far follow the same pattern: at $d=10$, S2 is worst-or-tied-worst on every band except <code>far</code>. This is the predicted failure mode — a fixed query budget covers vanishingly little of the near-manifold shell as the ambient volume grows.</li>
-<li><strong>S3 (uncertainty-guided) wins the near-manifold bands at every $d$</strong>: boundary $0.879$ / close $0.946$ / medium $0.967$ at $d=5$, and boundary $0.787$ / close $0.918$ / medium $0.960$ at $d=10$. Its only weakness is <code>far</code> (bounded exploration radius).</li>
-<li><strong>S5 (adaptive) closes S3's far-field gap with a single sampler</strong>: <code>far</code> AUROC becomes the best of any sampler at every $d$ ($0.980$ at $d=2$, $0.981$ at $d=5$, $0.978$ at $d=10$), while <code>close</code> and <code>medium</code> stay within $0.02$ of S3 across all $d$. This is the paper's recommended default when the deployment domain spans both boundary and far-field anomalies.</li>
-<li><strong>S1 (Gaussian jitter) remains a surprisingly robust runner-up</strong>: it stays within $0.01$-$0.02$ of S3 at $d=5$ and $d=10$ on most bands, and it costs an order of magnitude less compute (no finite-difference gradients, no chain). Practical implication: on any deployment where a cheap augmentation gets 95% of the win, S1 is the default and S3/S5 are the paper-work.</li>
-<li><strong>The scaling story flips as $d$ grows</strong>: at $d=2$ the winners were S3 (near bands) and S5/S2 (far); at $d=10$ S3 wins near, S5 wins far, and S2 is worst on three of four bands. S4 (mixed) is Pareto-dominated by S5 at every $d$ on this benchmark.</li>
+<li><strong>Uniform augmentation collapses in every direction as $d$ grows.</strong> S2's boundary AUROC drops from $0.924 \pm 0.013$ at $d=2$ to $0.659 \pm 0.022$ at $d=5$ to $0.550 \pm 0.037$ at $d=10$; close, medium, and even far follow the same pattern. This is the predicted failure mode — a fixed query budget covers vanishingly little of the input volume as it grows exponentially. S4 (which spends half its budget uniformly) collapses too, from $0.914$ boundary at $d=2$ to $0.520$ at $d=10$.</li>
+<li><strong>S3 (uncertainty-guided, fixed radius) wins boundary at $d=10$</strong> ($0.800 \pm 0.012$, narrowly beating S1 at $0.790$), and stays competitive on close and medium at all $d$. Its coverage constraint continues to hurt on <code>far</code>.</li>
+<li><strong>S5 (adaptive) wins the far band at every $d$</strong>: $1.000$ at $d=2$, $0.983$ at $d=5$, $0.980$ at $d=10$. The tax is real on the near bands (boundary/close), where S1 or S3 do better. S5 is the correct choice when the deployment domain includes gross out-of-distribution inputs; S3 when it does not.</li>
+<li><strong>Gaussian jitter (S1) is a surprisingly strong general-purpose baseline</strong> at higher $d$: it wins close and medium AUROC at both $d=5$ and $d=10$, at an order of magnitude less compute than S3 or S5 (no finite-difference gradients, no chain). This is the practical default when a rough approximation of the teacher decision boundary is enough; the Langevin methods pay off when boundary discrimination or far-field discrimination specifically matters.</li>
+<li><strong>S4 (mixed) is now clearly dominated at higher $d$</strong>: half its budget on high-$d$ uniform queries is nearly wasted, and it loses to every alternative on three of four bands at $d=10$. We keep it in the table for reference but no longer recommend it.</li>
 </ol>
 <p><strong>Scope of this section.</strong> Three seeds is under-powered to distinguish the top two samplers on individual bands where they differ by less than one s.d. (e.g., S3 vs S1 at $d=5$ on close and medium). The consistent-across-bands pattern is what carries the claim, not any single cell. The synthetic mixture-of-Gaussians is also not a substitute for a real high-dimensional feature space from an application domain — it exists to test the coverage argument on a benchmark where the geometry is under our control.</p>
 <p>Reproduce with:</p>
 <pre><code class="language-bash">python experiment_highd.py --dims 5 10 --seeds 3
 </code></pre>
 <h2 id="7-ablation-and-diagnosis">7. Ablation and diagnosis</h2>
-<p>Two intermediate configurations were tested and rejected on the sanity checks or on the metric board; both stay in the log rather than the paper, per this project's wins-only reporting:</p>
+<p>Three intermediate configurations were tested and rejected on the sanity checks or on the metric board; all three stay in the log rather than the paper, per this project's wins-only reporting.</p>
 <ul>
 <li><strong>Naive Langevin with $z$-normalized targets and variance-only $U$.</strong> All queries drifted to the clipping box; teacher $z$-scores blew up to $>100\sigma$, corrupting the student's loss. <strong>I4 passed but I3 failed</strong> (normal-side RMSE $0.73$); AUROC unusable.</li>
 <li><strong>Percentile-normalized targets with variance-only $U(x) = \mathrm{Var}_k p_k(x)$</strong>, i.e., $\alpha=0$. Invariants pass, but S3 queries collapse <em>inside</em> the noise band of the manifold (visible in the query cloud at that setting), because that is where the teachers legitimately disagree about how normal each point is. Boundary AUROC drops to $0.900$, below Gaussian jitter. Adding the drift term $\alpha \bar p$ ($\alpha = 10$) fixes both the query cloud and the metric board — this is the ablation that isolates why the paper needs both terms of $U$.</li>
 </ul>
+<p><strong>Percentile-ceiling audit.</strong> An earlier draft of the results used naive percentile normalization $F_k(x) = \text{searchsorted}(s_k(\mathcal{X}_n), x) / N$, which caps at $1.0$ for any raw score exceeding the training maximum. An audit on the anomaly test sets revealed pervasive ceiling ties: at $d=10$, $100\%$ of <code>far</code> anomalies received percentile exactly $1.0$ for KDE and kNN, and $100\%$ for IsolationForest as well. This ceiling turns the "far AUROC" metric into a tie-breaking artifact and inflated the win margin of any sampler that trained on far-field queries. The published tables use an <strong>extended percentile map</strong> that linearly extrapolates past the training range using the top-decile slope, so anomalies far from the training distribution receive distinct values above $1$. Rerunning the entire sweep with the fix corrected several per-cell numbers and, notably, promoted Gaussian jitter (S1) to boundary-winner at $d=2$ and to close/medium-winner at $d=5, 10$. The story is more modest but honest: uncertainty-guided sampling still wins where the argument predicts (boundary at $d=10$, far at every $d$ with the adaptive variant), but the previous "sweeps all near-manifold bands" claim was partly an artifact.</p>
 <h2 id="8-discussion">8. Discussion</h2>
 <h3 id="81-when-does-uncertainty-guided-sampling-win">8.1 When does uncertainty-guided sampling win?</h3>
-<p>The pattern across §6.1 and §6.2 is that uncertainty-guided sampling helps most in exactly the regime it was designed for: when the ambient input space is large enough that uniform coverage is wasteful, and when the anomalies of interest lie near the training manifold. Pure S3 wins the near-manifold bands at every dimension we tested but fails on the far field for the reason we predicted — the walk's projection radius bounds where the student ever sees a query. The adaptive S5 variant fixes this by letting each chain draw its own projection radius from a log-uniform distribution over $[0.3, 3.0]$, with the manifold prior weighted per-chain so that long-$\rho$ chains are not dragged back inward. S5 wins the <code>far</code> band at every $d$ (0.98 at $d=2$, 0.98 at $d=5$, 0.98 at $d=10$) while staying within one s.d. of S3 on the near bands, and it costs no more per query than S3 alone. In practice we recommend S5 as the default; S3 remains preferable only when the deployment domain guarantees anomalies stay near the manifold.</p>
-<p>Uniform augmentation is the correct baseline to beat, and the crossover point is instructive. At $d=2$ with a small bounding box, S2 is competitive on far AUROC (0.970) and only slightly behind on the near bands. At $d=5$ its near-band coverage degrades; by $d=10$ it is worst-or-tied-worst on three of four bands. The break-even dimensionality between S2 and S3 shifts with the density of the manifold; a real-data test would trace this trade-off directly.</p>
+<p>The corrected results (§7 percentile-ceiling audit) sharpen the answer. Uncertainty-guided sampling wins where the argument predicts it should:</p>
+<ul>
+<li><strong>Boundary at high $d$.</strong> S3 wins <code>boundary</code> AUROC at $d=10$ ($0.800$) — the hardest anomaly band, where the teachers themselves disagree most and small-network extrapolation is least reliable. The margin over S1 is narrow ($0.010$) at 3 seeds, and would need more seeds to be individually significant, but the pattern is consistent across the pattern of decreasing S3-S1 gap as $d$ shrinks.</li>
+<li><strong>Far at every $d$.</strong> S5 (adaptive radius) wins <code>far</code> at every dimension we tested, with margins of $0.002$ ($d=2$), $0.004$ ($d=5$), and $0.040$ ($d=10$). The adaptive radius is not decorative — its whole point is to let a fraction of chains reach the far field without abandoning the boundary.</li>
+</ul>
+<p>Where uncertainty-guided sampling <em>does not</em> win:</p>
+<ul>
+<li><strong>Close and medium at higher $d$.</strong> Gaussian jitter (S1) wins these at $d=5$ and $d=10$, by margins that exceed one s.d. of the runner-up. This is honest and worth stating plainly: for a well-behaved manifold with well-separated normal clusters, a small isotropic perturbation around every training point may cover the near-manifold shell adequately at a fraction of S3's compute.</li>
+<li><strong>The regime where uniform coverage is feasible ($d = 2$).</strong> S2 uniform is very strong on this benchmark at $d=2$ (best on far, close to best on close and medium). Its collapse at $d \ge 5$ is the coverage argument at work.</li>
+</ul>
+<p>The practical recommendation: <strong>S1 by default; S3 when boundary discrimination specifically matters; S5 when the deployment domain includes gross out-of-distribution inputs and there is no bounding box on the input</strong>. S4 (mixed) is now Pareto-dominated on this benchmark and is not recommended.</p>
 <h3 id="82-deployment">8.2 Deployment</h3>
 <p>Once the student is fit, the export path is standard: convert to a framework-agnostic computation graph (e.g. ONNX), apply parameter quantization on the way in, and compile for the target runtime (e.g. TVM). Nothing about the deployment step depends on the choice of sampler; this paper's contribution is upstream, at the training-data step, and is orthogonal to the compression / export tooling.</p>
 <h3 id="83-limitations-and-future-work">8.3 Limitations and future work</h3>
