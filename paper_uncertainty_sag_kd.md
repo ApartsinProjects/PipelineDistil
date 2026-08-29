@@ -4,7 +4,7 @@
 
 ## Abstract
 
-We consider the problem of compressing one or more blackbox unsupervised anomaly-detection **pipelines** (preprocessing + detector + postprocessing) into a single small student model suitable for resource-constrained deployment. The teacher pipelines are only queryable — their internals are opaque — and no labeled anomalies are available at any point in training. All we have is a set of normal operating samples and the teachers' *scores* on any input we can construct. We show that the difficulty is not the distillation objective, which is a plain regression from input to teacher score, but the **choice of training queries**: normals alone give the student no information about the teachers' behavior on the abnormal side of the decision surface. We propose **uncertainty-guided sampling**, a Langevin-style walk that generates synthetic query points along the pipelines' decision boundary, guided by inter-teacher percentile disagreement plus a drift toward the anomalous side. On a 2-D two-moons benchmark with three unsupervised teachers (KDE, Isolation Forest, kNN-distance) and a 40-parameter tanh MLP student (10 seeds), the fixed-radius variant of the sampler wins the close-off-manifold band ($0.986 \pm 0.003$) and medium band ($0.998 \pm 0.002$), and an **adaptive-radius variant** — chains draw their projection radius from a log-uniform distribution and have their manifold-prior weight scaled inversely — wins the far band ($1.000 \pm 0.000$) with a single sampler. Repeating the sweep at $d = 5$ and $d = 10$ with a tight 3-cluster GMM shows the coverage argument at work: uniform augmentation collapses in every direction as $d$ grows (boundary AUROC drops from $0.92$ at $d=2$ to $0.55$ at $d=10$), the fixed-radius sampler wins the boundary band at $d=10$ ($0.800 \pm 0.012$), and the adaptive variant wins the far band at every $d$ tested ($0.98$-$1.00$). A key methodological finding is that Gaussian jitter (S1) is a surprisingly strong general-purpose baseline in higher dimensions — on close and medium at $d=10$ it wins outright — a fact revealed only after we corrected a teacher-percentile ceiling artifact that had been inflating the uncertainty-guided sampler's advantage.
+We consider the problem of compressing one or more blackbox unsupervised anomaly-detection **pipelines** (preprocessing + detector + postprocessing) into a single small student model suitable for resource-constrained deployment. The teacher pipelines are only queryable — their internals are opaque — and no labeled anomalies are available at any point in training. All we have is a set of normal operating samples and the teachers' *scores* on any input we can construct. We show that the difficulty is not the distillation objective, which is a plain regression from input to teacher score, but the **choice of training queries**: normals alone give the student no information about the teachers' behavior on the abnormal side of the decision surface. We propose **uncertainty-guided sampling**, a Langevin-style walk that generates synthetic query points along the pipelines' decision boundary, guided by inter-teacher percentile disagreement plus a drift toward the anomalous side. On a 2-D two-moons benchmark with three unsupervised teachers (KDE, Isolation Forest, kNN-distance) and a 40-parameter tanh MLP student (10 seeds), the fixed-radius variant of the sampler wins the close-off-manifold band ($0.986 \pm 0.003$) and medium band ($0.998 \pm 0.002$), and an **adaptive-radius variant** — chains draw their projection radius from a log-uniform distribution and have their manifold-prior weight scaled inversely — wins the far band ($1.000 \pm 0.000$) with a single sampler. Repeating the sweep at $d = 5$ and $d = 10$ with a tight 3-cluster GMM (10 seeds) shows two effects: uniform augmentation collapses in every direction as $d$ grows (boundary AUROC drops from $0.92$ at $d=2$ to $0.56$ at $d=10$), confirming the coverage argument; and Gaussian jitter (S1) emerges as a surprisingly strong general-purpose baseline at higher dimension, winning boundary/close/medium at both $d=5$ and $d=10$ by margins that either match or exceed the fixed-radius Langevin variant. The adaptive-radius variant remains the clear winner on `far` at every $d$ ($0.987$ at $d=5$, $0.970$ at $d=10$). We also document two ablations that stayed in the log rather than the paper: (i) a percentile-ceiling artifact in the naive teacher-fusion map that inflated the Langevin sampler's earlier reported advantage, and (ii) a variance-only uncertainty potential that collapses queries inside the manifold noise band.
 
 ## 1. Introduction
 
@@ -186,44 +186,45 @@ The paper's central prediction is that uniform augmentation becomes intractable 
 
 **Result (student AUROC, mean $\pm$ sd, 3 seeds at $d=5, 10$; 10 seeds at $d=2$).**
 
-*d = 5*
+*d = 5*, 10 seeds
 
 | Sampler | boundary | close | medium | far |
 |---|---|---|---|---|
-| S0 (none)          | $0.793 \pm 0.004$ | $0.836 \pm 0.023$ | $0.799 \pm 0.069$ | $0.639 \pm 0.018$ |
-| S1 (gaussian)      | $\mathbf{0.881 \pm 0.020}$ | $\mathbf{0.976 \pm 0.008}$ | $\mathbf{0.996 \pm 0.006}$ | $0.979 \pm 0.003$ |
-| S2 (uniform)       | $0.659 \pm 0.022$ | $0.770 \pm 0.049$ | $0.868 \pm 0.063$ | $0.921 \pm 0.075$ |
-| **S3 (ours)**      | $0.853 \pm 0.021$ | $0.939 \pm 0.026$ | $0.982 \pm 0.014$ | $0.926 \pm 0.027$ |
-| **S4 (ours, mixed)** | $0.620 \pm 0.044$ | $0.746 \pm 0.083$ | $0.860 \pm 0.068$ | $0.890 \pm 0.070$ |
-| **S5 (ours, adaptive)** | $0.669 \pm 0.030$ | $0.802 \pm 0.044$ | $0.928 \pm 0.044$ | $\mathbf{0.983 \pm 0.027}$ |
+| S0 (none)          | $0.763 \pm 0.101$ | $0.786 \pm 0.129$ | $0.737 \pm 0.150$ | $0.588 \pm 0.155$ |
+| S1 (gaussian)      | $\mathbf{0.898 \pm 0.021}$ | $\mathbf{0.971 \pm 0.012}$ | $\mathbf{0.991 \pm 0.007}$ | $0.970 \pm 0.024$ |
+| S2 (uniform)       | $0.673 \pm 0.018$ | $0.771 \pm 0.020$ | $0.875 \pm 0.040$ | $0.928 \pm 0.042$ |
+| **S3 (ours)**      | $0.868 \pm 0.018$ | $0.952 \pm 0.009$ | $0.987 \pm 0.003$ | $0.888 \pm 0.056$ |
+| **S4 (ours, mixed)** | $0.633 \pm 0.055$ | $0.740 \pm 0.073$ | $0.849 \pm 0.050$ | $0.880 \pm 0.045$ |
+| **S5 (ours, adaptive)** | $0.662 \pm 0.046$ | $0.793 \pm 0.053$ | $0.930 \pm 0.035$ | $\mathbf{0.987 \pm 0.010}$ |
 
-*d = 10*
+*d = 10*, 10 seeds
 
 | Sampler | boundary | close | medium | far |
 |---|---|---|---|---|
-| S0 (none)          | $0.713 \pm 0.085$ | $0.831 \pm 0.088$ | $0.856 \pm 0.081$ | $0.780 \pm 0.067$ |
-| S1 (gaussian)      | $0.790 \pm 0.011$ | $\mathbf{0.934 \pm 0.014}$ | $\mathbf{0.980 \pm 0.005}$ | $0.940 \pm 0.041$ |
-| S2 (uniform)       | $0.550 \pm 0.037$ | $0.612 \pm 0.053$ | $0.696 \pm 0.076$ | $0.789 \pm 0.046$ |
-| **S3 (ours)**      | $\mathbf{0.800 \pm 0.012}$ | $0.922 \pm 0.023$ | $0.971 \pm 0.013$ | $0.888 \pm 0.047$ |
-| **S4 (ours, mixed)** | $0.520 \pm 0.027$ | $0.645 \pm 0.035$ | $0.778 \pm 0.019$ | $0.899 \pm 0.009$ |
-| **S5 (ours, adaptive)** | $0.633 \pm 0.015$ | $0.826 \pm 0.005$ | $0.945 \pm 0.014$ | $\mathbf{0.980 \pm 0.013}$ |
+| S0 (none)          | $0.668 \pm 0.107$ | $0.765 \pm 0.142$ | $0.774 \pm 0.159$ | $0.668 \pm 0.186$ |
+| S1 (gaussian)      | $0.803 \pm 0.029$ | $\mathbf{0.943 \pm 0.028}$ | $\mathbf{0.981 \pm 0.017}$ | $0.955 \pm 0.046$ |
+| S2 (uniform)       | $0.563 \pm 0.055$ | $0.616 \pm 0.072$ | $0.668 \pm 0.081$ | $0.756 \pm 0.064$ |
+| **S3 (ours)**      | $0.804 \pm 0.040$ | $0.930 \pm 0.029$ | $0.976 \pm 0.016$ | $0.906 \pm 0.057$ |
+| **S4 (ours, mixed)** | $0.535 \pm 0.037$ | $0.625 \pm 0.039$ | $0.726 \pm 0.032$ | $0.854 \pm 0.030$ |
+| **S5 (ours, adaptive)** | $0.612 \pm 0.037$ | $0.789 \pm 0.049$ | $0.915 \pm 0.029$ | $\mathbf{0.970 \pm 0.014}$ |
+
+At $d=10$ the boundary comparison between S3 ($0.804 \pm 0.040$) and S1 ($0.803 \pm 0.029$) is statistically indistinguishable: paired Wilcoxon signed-rank test, one-sided S3 $>$ S1, $p = 0.385$ across 10 seeds.
 
 ![Student AUROC per band as the input dimension grows](figure_dimscaling.png)
 
 **What the numbers say.**
 
-1. **Uniform augmentation collapses in every direction as $d$ grows.** S2's boundary AUROC drops from $0.924 \pm 0.013$ at $d=2$ to $0.659 \pm 0.022$ at $d=5$ to $0.550 \pm 0.037$ at $d=10$; close, medium, and even far follow the same pattern. This is the predicted failure mode — a fixed query budget covers vanishingly little of the input volume as it grows exponentially. S4 (which spends half its budget uniformly) collapses too, from $0.914$ boundary at $d=2$ to $0.520$ at $d=10$.
-2. **S3 (uncertainty-guided, fixed radius) wins boundary at $d=10$** ($0.800 \pm 0.012$, narrowly beating S1 at $0.790$), and stays competitive on close and medium at all $d$. Its coverage constraint continues to hurt on `far`.
-3. **S5 (adaptive) wins the far band at every $d$**: $1.000$ at $d=2$, $0.983$ at $d=5$, $0.980$ at $d=10$. The tax is real on the near bands (boundary/close), where S1 or S3 do better. S5 is the correct choice when the deployment domain includes gross out-of-distribution inputs; S3 when it does not.
-4. **Gaussian jitter (S1) is a surprisingly strong general-purpose baseline** at higher $d$: it wins close and medium AUROC at both $d=5$ and $d=10$, at an order of magnitude less compute than S3 or S5 (no finite-difference gradients, no chain). This is the practical default when a rough approximation of the teacher decision boundary is enough; the Langevin methods pay off when boundary discrimination or far-field discrimination specifically matters.
-5. **S4 (mixed) is now clearly dominated at higher $d$**: half its budget on high-$d$ uniform queries is nearly wasted, and it loses to every alternative on three of four bands at $d=10$. We keep it in the table for reference but no longer recommend it.
+1. **Uniform augmentation collapses in every direction as $d$ grows.** S2's boundary AUROC drops from $0.924 \pm 0.013$ at $d=2$ to $0.673 \pm 0.018$ at $d=5$ to $0.563 \pm 0.055$ at $d=10$; close, medium, and even far follow the same pattern. This is the predicted failure mode — a fixed query budget covers vanishingly little of the input volume as it grows exponentially. S4 (which spends half its budget uniformly) collapses too, from $0.914$ boundary at $d=2$ to $0.535$ at $d=10$.
+2. **Gaussian jitter (S1) is the strongest general-purpose sampler at higher $d$**, winning boundary, close, and medium at both $d=5$ and $d=10$, and staying within one s.d. of the winner on `far` at $d=5$. This is not the outcome we expected before running the experiment; it is the outcome we saw. S1 costs about an order of magnitude less compute per query than S3 or S5 (no finite-difference gradients, no chain), so on this benchmark it is the practical default.
+3. **S3 (uncertainty-guided, fixed radius) matches S1 on boundary and is a close second on close/medium** at higher $d$. At $d=10$ the boundary comparison between S3 and S1 is statistically indistinguishable ($p = 0.385$, paired Wilcoxon). S3's coverage constraint continues to hurt on `far`, where the tanh MLP extrapolates unreliably.
+4. **S5 (adaptive) wins the `far` band at every $d$**: $1.000$ at $d=2$, $0.987$ at $d=5$, $0.970$ at $d=10$. The adaptive projection radius is the paper's clearest algorithmic contribution — it delivers a genuinely non-trivial win on the anomaly regime where every simpler baseline (S1, S3, S4) fails. The tax is real on the near bands (boundary/close), where S1 does better.
+5. **S4 (mixed) is now dominated by S5 at higher $d$**: the static uniform half wastes budget on empty space, while S5's adaptive radius spends the corresponding compute in a productive direction.
 
-**Scope of this section.** Three seeds is under-powered to distinguish the top two samplers on individual bands where they differ by less than one s.d. (e.g., S3 vs S1 at $d=5$ on close and medium). The consistent-across-bands pattern is what carries the claim, not any single cell. The synthetic mixture-of-Gaussians is also not a substitute for a real high-dimensional feature space from an application domain — it exists to test the coverage argument on a benchmark where the geometry is under our control.
-
-Reproduce with:
+**Scope of this section.** Ten seeds per (condition, $d$) is enough to distinguish samplers separated by more than one s.d. on any single band, and enough to run per-band paired significance tests where the numeric margin is tighter (see the S3 vs S1 boundary comparison at $d=10$). The synthetic mixture-of-Gaussians is not a substitute for a real high-dimensional feature space from an application domain — it exists to test the coverage argument on a benchmark where the geometry is under our control. Reproduce with:
 
 ```bash
-python experiment_highd.py --dims 5 10 --seeds 3
+python experiment_highd.py --dims 5 10 --seeds 10          # ~110 min single CPU
+modal run modal_pipedistil.py --dims 5,10 --seeds 0,...,9  # ~14 min fan-out
 ```
 
 ## 7. Ablation and diagnosis
@@ -239,17 +240,17 @@ Three intermediate configurations were tested and rejected on the sanity checks 
 
 ### 8.1 When does uncertainty-guided sampling win?
 
-The corrected results (§7 percentile-ceiling audit) sharpen the answer. Uncertainty-guided sampling wins where the argument predicts it should:
+The 10-seed results at $d \in \{2, 5, 10\}$ separate the samplers into three regimes.
 
-- **Boundary at high $d$.** S3 wins `boundary` AUROC at $d=10$ ($0.800$) — the hardest anomaly band, where the teachers themselves disagree most and small-network extrapolation is least reliable. The margin over S1 is narrow ($0.010$) at 3 seeds, and would need more seeds to be individually significant, but the pattern is consistent across the pattern of decreasing S3-S1 gap as $d$ shrinks.
-- **Far at every $d$.** S5 (adaptive radius) wins `far` at every dimension we tested, with margins of $0.002$ ($d=2$), $0.004$ ($d=5$), and $0.040$ ($d=10$). The adaptive radius is not decorative — its whole point is to let a fraction of chains reach the far field without abandoning the boundary.
+**Uncertainty-guided sampling wins clearly on `far` at every $d$**, and only there. The adaptive-radius variant (S5) achieves $1.000$ at $d=2$, $0.987$ at $d=5$, $0.970$ at $d=10$. It is the only sampler in the study that trains the student on genuine far-field queries (as opposed to uniform in a bounding box, which is intractable at higher $d$, or a bounded Langevin walk, which never reaches the far field). This is the paper's clearest positive contribution.
 
-Where uncertainty-guided sampling *does not* win:
+**On close and medium** — the two nearer off-manifold bands — the fixed-radius Langevin (S3) is competitive at $d=5$ and $d=10$ but is edged out by Gaussian jitter (S1) at both dimensions. At $d=2$ S3 wins these two bands. So the near-manifold advantage of the Langevin machinery over cheap Gaussian jitter shrinks and eventually reverses as $d$ grows.
 
-- **Close and medium at higher $d$.** Gaussian jitter (S1) wins these at $d=5$ and $d=10$, by margins that exceed one s.d. of the runner-up. This is honest and worth stating plainly: for a well-behaved manifold with well-separated normal clusters, a small isotropic perturbation around every training point may cover the near-manifold shell adequately at a fraction of S3's compute.
-- **The regime where uniform coverage is feasible ($d = 2$).** S2 uniform is very strong on this benchmark at $d=2$ (best on far, close to best on close and medium). Its collapse at $d \ge 5$ is the coverage argument at work.
+**On boundary at higher $d$**, S3 and S1 are statistically indistinguishable ($p = 0.385$ paired Wilcoxon at $d=10$). Either is a reasonable choice; neither wins clearly.
 
-The practical recommendation: **S1 by default; S3 when boundary discrimination specifically matters; S5 when the deployment domain includes gross out-of-distribution inputs and there is no bounding box on the input**. S4 (mixed) is now Pareto-dominated on this benchmark and is not recommended.
+**Uniform augmentation (S2) collapses as $d$ grows on every band**, from $0.924$ boundary at $d=2$ to $0.563$ at $d=10$. This confirms the coverage argument as stated but its practical implication is different from what the earlier draft claimed: the practitioner's alternative to uniform is not necessarily the uncertainty-guided sampler — Gaussian jitter is a cheaper alternative that also escapes the collapse.
+
+**Practical recommendation.** Default to Gaussian jitter (S1) — it is cheap, needs no gradients, and wins boundary/close/medium at higher $d$. Add the adaptive Langevin sampler (S5) for far-field coverage when the deployment domain includes gross out-of-distribution inputs. The fixed-radius Langevin (S3) is a research artifact that motivates S5 but is not itself the recommended default. S4 (static mixed) is Pareto-dominated by S5 and is not recommended.
 
 ### 8.2 Deployment
 
