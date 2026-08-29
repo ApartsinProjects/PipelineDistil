@@ -98,6 +98,7 @@ KATEX = """<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.
   onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false},{left:'\\\\(',right:'\\\\)',display:false},{left:'\\\\[',right:'\\\\]',display:true}]});"></script>"""
 
 DOCXLINK = ('<div class="docxlinks">'
+            '<a class="docxlink" href="paper.pdf">&#8595; Paper (.pdf)</a>'
             '<a class="docxlink" href="paper.docx" download>&#8595; Manuscript (.docx)</a>'
             '</div>')
 
