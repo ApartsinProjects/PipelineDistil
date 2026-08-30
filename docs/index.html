@@ -78,25 +78,26 @@ footer{margin-top:3rem;padding-top:.9rem;border-top:.5px solid var(--rule);font-
 <h1>Where to Query a Blackbox Anomaly Pipeline: Shell Sampling for Label-Free Distillation</h1>
 <p class="authors">Alexander Apartsin<sup>1</sup>, Yehudit Aperstein<sup>2</sup></p><p class="affil"><sup>1</sup>School of Computer Science, Faculty of Sciences, Holon Institute of Technology (HIT), Holon, Israel</p><p class="affil"><sup>2</sup>Intelligent Systems, Afeka Academic College of Engineering, Tel-Aviv, Israel</p>
 <div class="abstract"><h2 id="abstract">Abstract</h2>
-<p>A deployed unsupervised anomaly-detection <strong>pipeline</strong> chains preprocessing, one or more detectors, and a fusion step, and is often too heavy for the edge device it must run on. We study how to distill such a pipeline into a single small student model. The pipeline can only be queried, its internals are opaque, and no labeled anomalies exist at any point: the only data is a set of normal operating samples. The student must therefore learn the pipeline's behavior on the anomalous region from synthetic query points we place there and label with the pipeline's own scores. The distillation objective is a plain regression from input to pipeline score; the question is <strong>where in input space a fixed budget of synthetic queries should go</strong>. We show that the informative queries lie in the <strong>low-density shell</strong> just off the normal manifold, and that within that shell the right target depends on the pipeline's off-manifold <em>shape</em>: for detectors whose score keeps growing away from the data, sample toward high score; for detectors whose score saturates, sample where the score has a large gradient. A single sampler that importance-weights the shell by <strong>both</strong> the pipeline score and its gradient magnitude is robust to this shape without being told it: across a spectrum of two-dimensional teacher pipelines (kernel density, k-NN distance, one-class SVM, and an autoencoder) it wins the saturating case outright and stays close to the best shape-specific sampler on every reproducible pipeline. We measure success as student-teacher <strong>fidelity</strong> on held-out anomalies (rank agreement), not standalone detection accuracy. Two boundaries hold: pipelines with discontinuous fusion are not reproducible by a small student at any query budget, and on real high-dimensional tabular data fine-grained fidelity remains open while simple baselines already suffice for coarse detection. All code and results are open-source.</p></div>
+<p>A deployed unsupervised anomaly-detection <strong>pipeline</strong> chains preprocessing, one or more detectors, and a fusion step, and is often too heavy for the edge device it must run on. We study how to distill such a pipeline into a single small student model. The pipeline can only be queried, its internals are opaque, and no anomaly labels are available for training, acquisition, or model selection; the only source data is a set of normal operating samples (benchmark anomaly labels are used only for final evaluation where they exist). The student must therefore learn the pipeline's behavior on the anomalous region from synthetic query points we place there and label with the pipeline's own scores. The distillation objective is a plain regression from input to pipeline score; the question is <strong>where a budget of synthetic queries should go</strong>. On controlled geometry we find, across a spectrum of teacher pipelines (kernel density, k-NN distance, one-class SVM, and an autoencoder), that the dominant lever is placing queries in a <strong>low-density shell</strong> just off the normal manifold: any shell sampler lifts student-teacher rank fidelity from near zero to $0.68$–$0.96$. Importance weighting <em>within</em> the shell, by pipeline score or by local score variation, adds a further gain specifically for <strong>saturating</strong> pipelines (the one-class SVM: an equal score/variation mixture reaches $0.73$ versus $0.68$ for uniform-shell sampling), while for monotone and growing detectors uniform-shell sampling is already as good. We measure success as student-teacher <strong>fidelity</strong> on held-out anomalies (rank agreement), not standalone detection accuracy, and account for the pipeline evaluations each sampler spends. Two boundaries hold: a non-smooth fusion pipeline stays poorly reproduced even at sixteen times the student width (a hard interaction of a sharp ridge with finite capacity), and on real high-dimensional tabular data fine-grained fidelity remains open while simple baselines already suffice for coarse detection. All code and results are open-source.</p></div>
 <h2 id="1-introduction">1. Introduction</h2>
 <p>Unsupervised anomaly detection in production is rarely a single model. A deployed pipeline chains a preprocessing stage, one or more detectors from different families (density estimators, tree-based isolators, distance-based methods, deep autoencoders), and a fusion or calibration step. When such a pipeline must run on a device with tight compute, memory, and power budgets, the practitioner faces a distillation problem: compress the pipeline into one small model whose scores approximate the pipeline's on the inputs the device will see.</p>
 <p>Two features make this different from ordinary supervised knowledge distillation [Hinton et al., 2015]. First, the teacher is a <strong>pipeline</strong>, not a differentiable model: we can query it end-to-end and read the scalar score it returns, but we cannot backpropagate through it. Second, the training set is <strong>fully unsupervised</strong>: only normal samples exist, and no labeled anomalies are ever available. Whatever the student learns about the pipeline's behavior on abnormal inputs, it learns from query points we construct and label with the pipeline itself.</p>
-<p>This paper asks a single question: <em>given a fixed budget of synthetic queries, where in input space should they go so the student best reproduces the pipeline?</em> We argue and show that:</p>
+<p>This paper asks a single question: <em>given a budget of synthetic queries, where in input space should they go so the student best reproduces the pipeline?</em> Our contributions:</p>
 <ul>
-<li>The informative queries lie in the <strong>low-density shell</strong> just off the normal manifold, not on the manifold (where normals already teach the student) and not in the far field (where the pipeline score is uninformatively saturated). (§4.2)</li>
-<li>Within the shell, the target depends on the pipeline's off-manifold <strong>shape</strong>. A <em>growing</em> pipeline (score rises with distance, e.g. autoencoder reconstruction error) is best queried toward high score; a <em>saturating</em> pipeline (score plateaus, e.g. one-class SVM) is best queried at score <strong>gradients</strong> (edges). (§4.3)</li>
-<li>A single sampler that weights the shell by <strong>both</strong> score and score-gradient magnitude is automatically robust to this shape and needs no manual choice or shape label. (§4.4)</li>
-<li>Reproducibility of the pipeline can be predicted by a cheap <strong>shape probe</strong> and is fundamentally bounded: discontinuous pipelines are not distillable by a small student regardless of sampling. (§4.5, §6.4)</li>
+<li><strong>Off-support acquisition is the main lever.</strong> Normal-only distillation leaves the anomaly-side score surface unidentified; against a uniform-shell baseline we show that simply placing queries in a low-density shell off the manifold is what recovers fidelity, far more than any weighting within the shell. (§4.2, §6.1)</li>
+<li><strong>Within-shell weighting is a targeted, not universal, gain.</strong> Importance weighting by pipeline score or by <em>local score variation</em> improves over uniform-shell sampling specifically for saturating pipelines (the one-class SVM), where the variation signal captures the score's edge; for monotone and growing detectors uniform-shell sampling is already as good, and for a non-smooth fusion the weighting is counterproductive. (§4.3, §6.1)</li>
+<li><strong>Robust equal mixture.</strong> Where weighting helps, an equal score/variation mixture hedges over the pipeline's shape without inferring it; a coefficient sweep shows the equal mix is best or flat on every teacher we can reproduce. (§4.4, §6.2)</li>
+<li><strong>Query cost and capacity.</strong> We account for the pipeline evaluations acquisition spends, give a dimension-independent $O(K)$ local-variation estimator (with its fidelity cost on the saturating case), and use a student-width sweep to separate query-limited from capacity-limited reproduction. (§4.3, §5, §6.4)</li>
 </ul>
-<p>We measure student-teacher <strong>fidelity</strong> on held-out anomalies (rank agreement between student and pipeline scores) because the goal is faithful reproduction of the pipeline, not beating it. We evaluate on a controlled 2-D benchmark and a spectrum of five teacher pipelines, and we report honestly on a real-data limitation (§6.5).</p>
+<p>We measure student-teacher <strong>fidelity</strong> on held-out anomalies (rank agreement) because the goal is faithful reproduction of the pipeline, not beating it. We evaluate on two-dimensional benchmarks and a spectrum of five teacher pipelines, and report a real high-dimensional limitation openly (§6.5).</p>
 <h2 id="2-related-work">2. Related work</h2>
 <h3 id="21-knowledge-distillation-and-blackbox-distillation">2.1 Knowledge distillation and blackbox distillation</h3>
 <p>Knowledge distillation transfers a large teacher's input-output behavior to a smaller student by matching soft outputs [Hinton et al., 2015; Ba and Caruana, 2014; Buciluă et al., 2006], extended to feature and relation matching [Romero et al., 2015; Park et al., 2019]. Our objective is a plain squared-error match on pipeline scores. Data-free distillation [Nayak et al., 2019; Chen et al., 2019] synthesizes inputs when training data is unavailable, typically by inverting the teacher's activations; our setting is intermediate, since we have the normal data but not the anomalies the deployed student must handle, so we synthesize queries to cover that region.</p>
+<p>Mathematically the closest line of work is <strong>query-efficient blackbox model extraction</strong>: training a surrogate from a queryable model by choosing informative queries. This includes prediction-API model stealing [Tramèr et al., 2016], query selection for functional cloning [Orekondy et al., 2019], active-learning-based extraction [Pal et al., 2020], data-free stealing with zeroth-order gradient estimation [Kariyappa et al., 2021], and query-efficient data-free transfer [Zhang et al., 2023]. That literature also makes the query-cost of gradient estimation explicit, which motivates our accounting (§5) and the dimension-independent estimator (§4.3). Our setting differs on two axes that make the acquisition problem asymmetric: the teacher emits a scalar anomaly score rather than class posteriors, and normal source data are available while the region whose ranking must be reproduced is precisely the region absent from that data. We study the intended, authorized-compression use of this capability; see the limitations for the relation to unauthorized extraction.</p>
 <h3 id="22-unsupervised-anomaly-detection">2.2 Unsupervised anomaly detection</h3>
 <p>The teacher pipelines we distill are built from standard unsupervised detectors: density estimators such as Gaussian kernel density [Silverman, 1986] and Local Outlier Factor [Breunig et al., 2000]; boundary methods such as one-class SVM [Schölkopf et al., 2001] and Deep SVDD [Ruff et al., 2018]; isolation and distance methods such as Isolation Forest [Liu et al., 2008] and k-NN distance; and reconstruction methods such as autoencoders [Zhou and Paffenroth, 2017]. A unifying review [Ruff et al., 2021] catalogues these families and their persistent score-calibration difficulty across families, which our rank-based normalization addresses. Recent deep detectors include self-supervised [Bergman and Hoshen, 2020; Golan and El-Yaniv, 2018] and reconstruction-driven industrial methods [Zavrtanik et al., 2021; Roth et al., 2022; Li et al., 2021]; our student is architecture-agnostic to the pipeline it distills.</p>
 <h3 id="23-synthetic-query-synthesis-and-off-manifold-sampling">2.3 Synthetic query synthesis and off-manifold sampling</h3>
-<p>Synthesizing training points when only normals are available has been approached by adversarial near-boundary generation [Ducoffe and Precioso, 2018; Chen et al., 2020] and by score-based and diffusion samplers that draw from a target density defined through its score function [Song and Ermon, 2019, 2020]. Our sampler places queries by importance-weighting an off-manifold shell rather than training a generator, and does not require differentiating the teacher.</p>
+<p>The idea of generating negatives in a neighborhood of the normal manifold is closest to <strong>DROCC</strong> [Goyal et al., 2020], which assumes normals lie near a low-dimensional manifold and synthesizes adversarial negative points in a shell around them to <em>train an anomaly detector</em>. Outlier Exposure [Hendrycks et al., 2019] and boundary-generation methods [Ngo et al., 2019, Fence GAN] likewise show that the choice of non-normal training points strongly shapes an anomaly model. Our aim is different: we do not train a detector but reproduce an <em>existing</em> blackbox scorer, our target is teacher fidelity rather than anomaly classification, and our question is <em>where inside</em> the off-manifold region teacher queries are most informative for that reproduction. Other routes to synthesizing off-normal points include adversarial near-boundary generation [Ducoffe and Precioso, 2018; Chen et al., 2020] and score-based or diffusion samplers that draw from a density defined through its score function [Song and Ermon, 2019, 2020]. Our sampler places queries by importance-weighting an off-manifold shell rather than training a generator, and does not require differentiating the teacher.</p>
 <h3 id="24-active-learning-and-query-synthesis">2.4 Active learning and query synthesis</h3>
 <p>Constructing new query points rather than selecting from a pool is <em>query synthesis</em> [Angluin, 1988], distinct from the pool-based active learning that dominates the modern literature [Sener and Savarese, 2018; Settles, 2010]. The score-gradient signal we use is related to disagreement- and margin-based acquisition [Seung et al., 1992; Houlsby et al., 2011; Ducoffe and Precioso, 2018]. Langevin dynamics for concentrating samples in target regions has a long history [Welling and Teh, 2011; Song and Ermon, 2019]; we implement both a Langevin variant of our sampler and a simpler importance-weighted form, and use the latter for the main comparison because it is easier to reason about and needs no step-size tuning.</p>
 <h2 id="3-problem-setup">3. Problem setup</h2>
@@ -107,7 +108,7 @@ footer{margin-top:3rem;padding-top:.9rem;border-top:.5px solid var(--rule);font-
 <li><strong>no labeled anomalies</strong>, at train or validation time.</li>
 </ul>
 <p>We want a compact student $f_\theta : \mathbb{R}^d \to \mathbb{R}$ that reproduces $s$ at deployment, exported as a framework-agnostic graph (e.g. ONNX) and compiled for the target runtime. The distillation objective is a plain regression; the contribution is the placement of the synthetic queries used to fit $f_\theta$.</p>
-<p><strong>Success metric.</strong> Because the goal is to reproduce the pipeline, we measure student-teacher <strong>fidelity</strong> on a held-out anomaly set $\mathcal{A}$: the Spearman rank correlation between $f_\theta(a)$ and $s(a)$ over $a \in \mathcal{A}$. This rewards faithful reproduction of the pipeline's ranking on inputs the student was never trained to match, rather than the student's standalone detection accuracy.</p>
+<p><strong>Success metric.</strong> Because the goal is to reproduce the pipeline, we measure student-teacher <strong>fidelity</strong> on a held-out anomaly set $\mathcal{A}$: the Spearman rank correlation between $f_\theta(a)$ and $s(a)$ over $a \in \mathcal{A}$. This rewards faithful reproduction of the pipeline's ranking on inputs the student was never trained to match, rather than the student's standalone detection accuracy. All acquisition and student hyperparameters (shell bounds, mixture coefficient, student width, early stopping) are set from normal data and pipeline queries only; the anomaly set $\mathcal{A}$ is touched once, for final reporting.</p>
 <h2 id="4-method-shell-sampling">4. Method: shell sampling</h2>
 <h3 id="41-why-normals-only-distillation-fails">4.1 Why normals-only distillation fails</h3>
 <p>Fitting the student only on the normals,
@@ -120,97 +121,171 @@ $$
 $$
 The question is where to place the $q_j$.</p>
 <h3 id="42-where-the-low-density-shell">4.2 Where: the low-density shell</h3>
-<p>Let $\rho(x)$ be the distance from $x$ to its nearest training normal (a cheap proxy for data density). Queries are wasted in two places: <strong>on</strong> the manifold ($\rho \approx 0$), where the normals already supply the target, and in the <strong>far field</strong> ($\rho$ large), where most pipelines return an uninformative extreme (a saturated ceiling) and the student needs only a single anchor. The informative region is the <strong>low-density shell</strong> $\{x : \rho_{\min} \le \rho(x) \le \rho_{\max}\}$: off the manifold, but close enough that the pipeline's decision structure is still resolved and a plausible anomaly could actually appear. All samplers below draw candidates from this shell.</p>
-<h3 id="43-what-score-and-gradient-depend-on-the-pipeline-shape">4.3 What: score and gradient depend on the pipeline shape</h3>
-<p>To make signals comparable across heterogeneous detectors we convert each raw score to its rank on the training normals: $u(x) = F(s(x))$, where $F$ is the empirical CDF of $s$ on $\mathcal{X}$. Above the training maximum $F$ is <strong>extended linearly</strong> using the slope of the top decile of training scores, so that inputs scoring above every normal receive distinct values greater than one; the extension is capped at $2$ to bound heavy-tailed detectors. This extrapolation is not cosmetic: a naive clip at one collapses the entire off-manifold region to a tie and destroys the ranking exactly where the queries live.</p>
+<p>Let $\rho(x)$ be the distance from $x$ to its nearest training normal in the standardized feature space (a cheap proxy for data density). Queries are wasted in two places. <strong>On</strong> the manifold ($\rho \approx 0$) the normals already supply the target. In the <strong>far field</strong> ($\rho$ large) the queries are inefficient for either pipeline shape: a saturating pipeline returns a constant ceiling that carries no new information, and a growing pipeline returns a smooth monotone extrapolation that a few anchors already pin down, while the behavior that actually distinguishes deployment anomalies is the near-boundary structure closer in. The informative region is the <strong>low-density shell</strong> $\{x : \rho_{\min} \le \rho(x) \le \rho_{\max}\}$: off the manifold, but close enough that the pipeline's decision structure is still resolved. All samplers below draw candidates from this shell. In the continuous, standardized feature spaces we study, a shell point is a geometrically plausible off-normal input; for mixed or bounded tabular features, Euclidean proximity does not guarantee a valid input, and queries would need to respect categorical levels and box constraints (or be generated in a decoded latent space). We return to this in the limitations.</p>
+<h3 id="43-what-score-and-local-variation-depend-on-the-pipeline-shape">4.3 What: score and local variation depend on the pipeline shape</h3>
+<p>To make signals comparable across heterogeneous detectors we convert each raw score to a <strong>monotone rank</strong> on the training normals. Sort the training scores $s_{(1)} \le \dots \le s_{(N)}$ and map $s_{(i)} \mapsto i/(N+1)$; for an arbitrary input, $u(x)$ is the piecewise-linear interpolation of $s(x)$ between adjacent training scores. Above the training maximum $u$ is extended linearly with the slope of the top decile of training scores, capped at $2$, so that inputs scoring above every normal receive distinct values greater than one (a plain clip at one collapses the entire off-manifold region to a tie and destroys the ranking exactly where the queries live). This transform is invariant to any strictly monotone rescaling of the raw score up to the tail slope, which is the property we want when comparing detectors on different scales.</p>
 <p>Within the shell, which candidates are informative depends on how the pipeline behaves off the manifold:</p>
 <ul>
 <li><strong>Growing pipelines</strong> (the rank $u$ keeps rising with distance, e.g. autoencoder reconstruction error): the informative queries are toward <strong>high score</strong>. Weight candidates by $u(x)$.</li>
-<li><strong>Saturating pipelines</strong> (the rank $u$ plateaus off the manifold, e.g. one-class SVM whose decision function flattens): high-score weighting is uninformative because most of the shell is already at the plateau; the informative queries are where the score <strong>changes</strong>, i.e. at large $\|\nabla_x u(x)\|$. Weight candidates by the gradient magnitude (estimated by finite differences; the pipeline need not be differentiable).</li>
+<li><strong>Saturating pipelines</strong> (the rank $u$ plateaus off the manifold, e.g. one-class SVM whose decision function flattens): high-score weighting is uninformative because most of the shell is already at the plateau; the informative queries are where the score <strong>changes</strong>. We measure this by the <strong>local score variation</strong> $v(x)$, a finite-difference estimate of how much $u$ changes around $x$. In the experiments below $v$ is the coordinate finite-difference magnitude $\|\Delta_h u(x)\|$; because that costs $O(d)$ pipeline evaluations per candidate, we also test a query-efficient estimator that averages $K$ random directional differences (Appendix A), whose cost is $O(K)$ and independent of dimension. We call this "local variation" rather than "gradient" because $u$ is only piecewise-linear, so $v$ is a finite-scale roughness measure, not a true derivative. No access to pipeline internals or derivatives is required.</li>
 </ul>
 <h3 id="44-the-combined-sampler">4.4 The combined sampler</h3>
 <p>Rather than choose per pipeline, weight each shell candidate by <strong>both</strong> signals:
 $$
-w(x) \;\propto\; \tfrac{1}{2}\,\widehat{u}(x) \;+\; \tfrac{1}{2}\,\widehat{\|\nabla_x u(x)\|},
+w(x) \;\propto\; \tfrac{1}{2}\,\widehat{u}(x) \;+\; \tfrac{1}{2}\,\widehat{v}(x),
 $$
-where $\widehat{g}(x) = g(x) / \sum_{x' \in \text{pool}} g(x')$ normalizes each signal to a probability over the candidate pool (so the two terms are directly comparable and the $\tfrac12$/$\tfrac12$ mix is meaningful), and we draw $M$ queries by importance sampling. The score term handles growing pipelines, the gradient term handles saturating ones, and because both are present the sampler is robust to the pipeline's shape without being told it. We refer to this as the <strong>combined shell sampler</strong>. A Langevin variant that walks up the same potential while a density prior holds it in the shell gives comparable fidelity and is described in Appendix A; the importance-weighted form is simpler and used throughout.</p>
-<h3 id="45-automatic-operation-and-a-reproducibility-probe">4.5 Automatic operation and a reproducibility probe</h3>
-<p>The combined sampler needs no manual shape selection. If a diagnostic is wanted, a cheap <strong>shape probe</strong> estimates whether a pipeline is growing or saturating by measuring how the median score changes across concentric shells at increasing $\rho$: a growing pipeline's score keeps rising past the training range, a saturating one plateaus. In our experiments an explicit growth-to-weight rule based on this probe matches the fixed combined sampler but does not beat it, so we recommend the combined sampler as the default and reserve the probe as a diagnostic. The probe also flags the failure case of §6.4: a pipeline whose score is flat across all shells cannot be reproduced by any sampler.</p>
+where $\widehat{g}(x) = g(x) / \sum_{x' \in \text{pool}} g(x')$ normalizes each signal to a probability over the candidate pool (so the two terms are comparable and the $\tfrac12$/$\tfrac12$ mix is meaningful), and we draw $M$ queries by importance sampling. This is an <strong>equal mixture</strong> (a hedge), not an adaptive rule: it does not infer the pipeline's shape and re-weight, it simply carries both acquisition signals so that whichever one the pipeline rewards is present. The score term serves growing pipelines and the variation term serves saturating ones; §6.2 sweeps the mixture coefficient to show that the equal mix is a robust default rather than a tuned choice. We refer to this as the <strong>combined shell sampler</strong>. A Langevin variant that walks up the same potential while a density prior holds it in the shell gives comparable fidelity and is described in Appendix A; the importance-weighted form is simpler and used throughout.</p>
+<h3 id="45-a-teacher-radial-profile-diagnostic">4.5 A teacher radial-profile diagnostic</h3>
+<p>The combined sampler needs no manual shape selection. If a description of the pipeline is wanted, a cheap <strong>radial diagnostic</strong> classifies it as growing, saturating, or non-monotone by measuring how the median score changes across concentric shells at increasing $\rho$: a growing pipeline's median keeps rising past the training range, a saturating one plateaus. This is a statement about the pipeline's radial score profile only. We do not claim it predicts distillability: a flat radial median is consistent with both a trivially reproducible constant and a hard angular function, so a one-dimensional radial summary cannot bound the representational difficulty of the full $d$-dimensional surface. Whether a pipeline is reproducible by a given student is a separate, capacity-dependent question that we study empirically in §6.4.</p>
 <h2 id="5-experimental-setup">5. Experimental setup</h2>
 <p><strong>Data.</strong> Two-moons normals ($N = 2000$, noise $0.15$); a held-out off-manifold anomaly set drawn uniformly in the shell $0.2 < \rho < 2.5$ (500 points). This isolates the sampler as the only variable on geometry we control.</p>
-<p><strong>Teacher pipelines (spectrum).</strong> Five single-stage pipelines spanning off-manifold shapes, each fit on the normals only: k-NN distance ($k=10$) and Gaussian kernel density (both monotone), one-class SVM with an RBF kernel (saturating), an undercomplete tanh autoencoder scored by reconstruction error (growing), and a percentile-max fusion of the autoencoder and kernel density (discontinuous). We additionally build a three-step complex pipeline (standardize, autoencoder reconstruction error, density-gated combination) for the mechanism study of §6.3.</p>
+<p><strong>Teacher pipelines (spectrum).</strong> Five pipelines spanning off-manifold shapes, each fit on the normals only: k-NN distance ($k=10$) and Gaussian kernel density (both monotone), one-class SVM with an RBF kernel (saturating), an undercomplete tanh autoencoder scored by reconstruction error (growing), and a percentile-max fusion of the autoencoder and kernel density (non-smooth: a maximum of two rank surfaces, continuous but with a sharp ridge where they cross, and piecewise from the empirical percentile transforms). We additionally build a three-step complex pipeline (standardize, autoencoder reconstruction error, density-gated combination) for the mechanism study of §6.3.</p>
 <p><strong>Student.</strong> A small tanh MLP (one hidden layer of 8 units, about 40 parameters at $d=2$) with input standardization, deliberately low-capacity so that <em>where</em> the queries are placed, not student size, determines what boundary it learns.</p>
-<p><strong>Sampler settings.</strong> Every sampler receives the same query budget $M = 2000$; the synthetic-loss weight is $\gamma = 1$ (normals and queries contribute equally). The shell bounds are $\rho_{\min} = 0.15$ and $\rho_{\max} = 2.5$; gradient magnitudes use central finite differences with step $h = 0.05$ on the rank $u$. The sampling shell overlaps the region the held-out anomalies occupy ($0.2 < \rho < 2.5$) by design: the point is to teach the student the off-manifold region where it will be tested. This is not label leakage: the queries carry the pipeline's own scores as targets, no anomaly labels are used at any point, and fidelity is measured against the pipeline, not against ground-truth labels.</p>
-<p><strong>Samplers compared.</strong> Normals-only (no queries) and two off-shell baselines, Gaussian jitter on normals and uniform in a bounding box; and three shell samplers, <strong>score-only</strong> (weight by $u$), <strong>gradient-only</strong> (weight by $\|\nabla u\|$), and the <strong>combined</strong> sampler of §4.4. The two off-shell baselines appear in §6.3 and §6.5; the shell samplers are compared head to head in §6.1. A Langevin variant is described in Appendix A.</p>
-<p><strong>Metric.</strong> Student-teacher fidelity on the held-out anomalies: the Spearman rank correlation between student and pipeline scores. Means over 3 seeds unless stated.</p>
+<p><strong>Sampler settings.</strong> Every sampler contributes the same number of student-training queries, $M = 2000$; the synthetic-loss weight is $\gamma = 1$ (normals and queries contribute equally). The shell bounds are $\rho_{\min} = 0.15$ and $\rho_{\max} = 2.5$; local variation uses central finite differences with step $h = 0.05$ on the rank $u$. The sampling shell overlaps the region the held-out anomalies occupy ($0.2 < \rho < 2.5$): the intent is to teach the student the off-manifold region where it will be tested, which is not label leakage because the queries carry the pipeline's own scores as targets and no anomaly labels are used at any point. We also report (§6.1) an evaluation on anomalies drawn from bands <em>outside</em> the densest part of the sampling shell to check that the gains are not mere regional interpolation.</p>
+<p><strong>Query accounting.</strong> The $M$ queries above are the points used to <em>train</em> the student. The samplers differ in how many pipeline evaluations they spend to <em>select</em> those points, and we count this explicitly. Normals-only and the off-shell baselines evaluate the pipeline $M$ times. The shell samplers first score a candidate pool of size $12M$ ($12M$ evaluations), and the variation term additionally probes each candidate: coordinate finite differences cost $2d$ extra evaluations per candidate ($O(d)$), while the $K$-direction estimator costs $2K$ ($O(K)$, dimension-independent). Appendix A gives the exact per-sampler counts. Because these acquisition costs differ, our main tables hold $M$ fixed rather than total pipeline evaluations; a fully cost-matched budget-curve comparison is the natural next step (§7), and the $K$-direction estimator is aimed squarely at keeping the variation term affordable in high dimension.</p>
+<p><strong>Samplers compared.</strong> Normals-only (no queries); two off-shell baselines, Gaussian jitter on normals and uniform in a bounding box; a <strong>uniform-shell</strong> baseline (queries drawn uniformly from the same shell, to isolate whether <em>allocation within</em> the shell matters or merely shell coverage); and three shell samplers, <strong>score-only</strong> (weight by $u$), <strong>variation-only</strong> (weight by $v$), and the <strong>combined</strong> equal mixture of §4.4. A Langevin variant is described in Appendix A.</p>
+<p><strong>Metric.</strong> Student-teacher fidelity on the held-out anomalies: the Spearman rank correlation between student and pipeline scores. Means over 10 seeds with standard deviations unless stated.</p>
 <h2 id="6-results">6. Results</h2>
 <h3 id="61-the-informative-region-and-the-shape-dependence">6.1 The informative region and the shape dependence</h3>
-<p>Placing queries in the low-density shell is what makes distillation work. On the four reproducible teacher pipelines the normals-only student is at or below Spearman $0.32$ (and negative, $-0.056$, for the one-class SVM), while the combined shell sampler reaches $0.71$–$0.97$. Within the shell, the score-only and gradient-only samplers trade off exactly as the shape argument predicts.</p>
-<p><strong>Student-teacher fidelity (Spearman) on held-out anomalies, per teacher pipeline.</strong></p>
+<p>Two effects separate cleanly, and the <strong>uniform-shell</strong> baseline (queries drawn uniformly from the same shell, no importance weighting) is what tells them apart.</p>
+<p><strong>Student-teacher fidelity (Spearman) on held-out anomalies, per teacher pipeline</strong> (10 seeds, mean $\pm$ sd).</p>
 <table>
 <thead>
 <tr>
 <th>Pipeline (shape)</th>
 <th>normals-only</th>
+<th>uniform-shell</th>
 <th>score-only</th>
-<th>gradient-only</th>
+<th>variation-only</th>
 <th><strong>combined</strong></th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>k-NN distance (monotone)</td>
-<td>$0.308$</td>
-<td>$0.950$</td>
-<td>$0.968$</td>
-<td>$0.966$</td>
+<td>$0.34 \pm 0.15$</td>
+<td>$0.964$</td>
+<td>$0.963$</td>
+<td>$0.962$</td>
+<td>$0.965$</td>
 </tr>
 <tr>
 <td>kernel density (monotone)</td>
-<td>$0.280$</td>
-<td>$0.933$</td>
-<td>$0.940$</td>
-<td>$0.944$</td>
+<td>$0.19 \pm 0.23$</td>
+<td>$0.948$</td>
+<td>$0.946$</td>
+<td>$0.955$</td>
+<td>$0.948$</td>
 </tr>
 <tr>
 <td>one-class SVM (saturating)</td>
-<td>$-0.056$</td>
-<td>$0.350$</td>
-<td>$0.562$</td>
-<td>$\mathbf{0.708}$</td>
+<td>$0.03 \pm 0.13$</td>
+<td>$0.677$</td>
+<td>$0.649$</td>
+<td>$0.722$</td>
+<td>$\mathbf{0.730}$</td>
 </tr>
 <tr>
 <td>autoencoder (growing)</td>
-<td>$0.322$</td>
-<td>$\mathbf{0.911}$</td>
-<td>$0.818$</td>
-<td>$0.823$</td>
+<td>$0.40 \pm 0.19$</td>
+<td>$0.866$</td>
+<td>$\mathbf{0.877}$</td>
+<td>$0.865$</td>
+<td>$0.862$</td>
 </tr>
 <tr>
-<td>percentile-max fusion (discontinuous)</td>
-<td>$0.055$</td>
-<td>$0.069$</td>
-<td>$0.106$</td>
-<td>$0.054$</td>
+<td>percentile-max fusion (non-smooth)</td>
+<td>$0.11 \pm 0.07$</td>
+<td>$0.177$</td>
+<td>$0.181$</td>
+<td>$0.045$</td>
+<td>$0.105$</td>
 </tr>
 </tbody>
 </table>
-<p><img alt="Fidelity of each sampler across the teacher-pipeline spectrum; the best target within the shell depends on the pipeline's off-manifold shape, and the combined sampler is robust to it." src="figure_sampler_shape.png" /></p>
-<p>Two readings. First, <strong>the score-only sampler wins the growing autoencoder</strong> ($0.911$) but is weakest on the saturating one-class SVM ($0.350$); the <strong>gradient-only sampler wins the saturating case</strong> ($0.562$) but trails on the autoencoder ($0.818$). This is the shape dependence of §4.3, measured. Second, <strong>the combined sampler is the robust choice</strong>: it wins the hard one-class SVM outright ($0.708$, well above either single signal), ties the best on both monotone pipelines, and on the autoencoder performs like the gradient-only sampler ($0.823$ vs $0.818$), below the score-only best of $0.911$. No single-signal sampler is best everywhere, and the combined one is the only sampler that is never far from the best on any reproducible pipeline; its worst case is the autoencoder, where it is $0.09$ below score-only.</p>
-<h3 id="62-the-combined-sampler-needs-no-shape-label">6.2 The combined sampler needs no shape label</h3>
-<p>Because it carries both terms, the combined sampler adapts to the pipeline shape implicitly. An explicit alternative that runs the shape probe of §4.5 and sets the score-versus-gradient weight from it reaches the same fidelity as the fixed combined sampler across the spectrum but does not exceed it. We therefore recommend the combined sampler as the automatic default and keep the probe as a diagnostic; it also identifies in advance the undistillable case analyzed in §6.4. No manual choice, no shape label, and no anomaly labels are required at any point.</p>
+<p><img alt="Fidelity of each sampler across the teacher-pipeline spectrum: placing queries in the shell is the dominant lever, and importance weighting within the shell adds a targeted gain on the saturating one-class SVM." src="figure_sampler_shape.png" /></p>
+<p><strong>First effect: shell placement is the dominant lever.</strong> Every shell sampler lifts fidelity from the normals-only baseline (Spearman $0.03$–$0.40$) to $0.68$–$0.96$ on the four reproducible pipelines. This is the largest effect in the study and is robust across teachers.</p>
+<p><strong>Second effect: importance weighting inside the shell helps only saturating pipelines.</strong> Comparing the combined sampler to uniform-shell isolates the value of <em>where in the shell</em> queries land, beyond mere shell coverage. The gain is $+0.001$ (k-NN), $0.000$ (KDE), $-0.005$ (autoencoder), and $\mathbf{+0.053}$ (one-class SVM); on the non-smooth fusion importance weighting is counterproductive ($-0.072$). So for monotone and growing pipelines, uniform-shell sampling is already as good as importance weighting, and only the <strong>saturating one-class SVM</strong> rewards targeted acquisition. There, the shape argument of §4.3 holds as predicted: the local-variation signal ($0.722$) beats the score signal ($0.649$) and the uniform-shell baseline ($0.677$), and the equal mixture ($0.730$) is best of all. The non-smooth fusion is poorly reproduced by every sampler ($\le 0.18$); we return to it in §6.4.</p>
+<p>The honest summary is therefore narrower than "importance sampling wins": the placement of queries in the shell is what matters most, and within-shell importance weighting is worth its extra pipeline evaluations specifically when the pipeline saturates off the manifold.</p>
+<h3 id="62-the-equal-mixture-is-a-robust-hedge">6.2 The equal mixture is a robust hedge</h3>
+<p>Where importance weighting does help (the one-class SVM), the mixture coefficient governs the score-versus-variation balance. To check that the equal $\tfrac12$/$\tfrac12$ split is a reasonable default rather than a tuned choice, we sweep $\lambda$ in $p_\lambda = \lambda\,\widehat u + (1-\lambda)\,\widehat v$ over $\{0, 0.25, 0.5, 0.75, 1\}$ on every teacher (10 seeds). On the monotone and growing pipelines fidelity is flat in $\lambda$ (within $\pm 0.02$), consistent with §6.1: any within-shell weighting is about equally good there. On the saturating one-class SVM the equal mixture $\lambda = 0.5$ is best ($0.730$, versus $0.689$ at pure variation and $0.692$ at pure score), so mixing beats either pure signal. The one pipeline that prefers an off-center $\lambda$ is the non-smooth fusion, which favors more score weight ($0.175$ at $\lambda=1$ versus $0.068$ at $\lambda=0$) but stays low throughout. The equal mixture is thus a safe default: it is optimal or flat everywhere except the fusion, which no setting reproduces well. We do not claim an adaptive rule; a diagnostic-driven $\lambda$ (§4.5) matched the equal mixture without exceeding it.</p>
 <h3 id="63-mechanism-on-a-complex-pipeline">6.3 Mechanism on a complex pipeline</h3>
 <p>To show <em>why</em> sampling is needed rather than only <em>that</em> it helps, we distill the three-step pipeline defined in §5 (standardize, autoencoder reconstruction error, density-gated combination), whose off-manifold surface is genuinely structured. This study uses the Langevin variant of the shell sampler (Appendix A), which lets us contrast a walk confined to a small fixed radius against one whose per-chain radius adapts to reach across the whole shell. Fidelity on the held-out anomalies over 5 seeds: normals-only $0.245 \pm 0.120$, Gaussian jitter $0.336 \pm 0.265$, the shell walk at a small fixed radius $0.184 \pm 0.290$ (too confined to reach the anomalous region), and the adaptive-radius shell walk $\mathbf{0.939 \pm 0.030}$. The figure below shows the mechanism: normals-only produces a smooth, monotone surface that cannot express the pipeline's off-manifold structure, while the shell sampler's query cloud spans the anomalous region and the resulting student reproduces the true surface, including an off-manifold valley the pipeline exhibits far from any data.</p>
 <p><img alt="The complex pipeline's off-manifold surface (left) is not reproducible from normals only (middle); shell sampling places queries across the anomalous region and the student reproduces it (right)." src="figure_complex.png" /></p>
-<h3 id="64-a-fundamental-limit-discontinuous-pipelines">6.4 A fundamental limit: discontinuous pipelines</h3>
-<p>The percentile-max fusion is not reproduced by any sampler (fidelity $\approx 0.05$–$0.11$ for all). Its score is a non-smooth maximum of two rank surfaces; the small student cannot represent the discontinuity regardless of where queries are placed. This is a <strong>capacity</strong> limit, not a sampling one, and the shape probe of §4.5 detects it in advance (a flat score profile across shells). We report it plainly: shell sampling makes a pipeline's off-manifold behavior <em>available</em> to the student, but a student too small to represent that behavior still cannot reproduce it.</p>
+<h3 id="64-sampling-and-student-capacity-interact">6.4 Sampling and student capacity interact</h3>
+<p>The percentile-max fusion is poorly reproduced by any sampler at the default student width (fidelity $\le 0.18$). Its score is a continuous but non-smooth maximum of two rank surfaces, with a sharp ridge where they cross; the question is whether the failure is one of <em>acquisition</em> (queries in the wrong place) or <em>capacity</em> (the student too small to represent the ridge). To separate the two we sweep the student width over $\{4, 8, 16, 32, 64, 128\}$ hidden units at a fixed query budget, using the combined sampler, and read fidelity as a function of width for every teacher.</p>
+<table>
+<thead>
+<tr>
+<th>width</th>
+<th>4</th>
+<th>8</th>
+<th>16</th>
+<th>32</th>
+<th>64</th>
+<th>128</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>k-NN distance</td>
+<td>$0.70$</td>
+<td>$0.96$</td>
+<td>$0.98$</td>
+<td>$0.98$</td>
+<td>$0.98$</td>
+<td>$0.98$</td>
+</tr>
+<tr>
+<td>kernel density</td>
+<td>$0.66$</td>
+<td>$0.94$</td>
+<td>$0.97$</td>
+<td>$0.97$</td>
+<td>$0.97$</td>
+<td>$0.98$</td>
+</tr>
+<tr>
+<td>one-class SVM</td>
+<td>$0.78$</td>
+<td>$0.71$</td>
+<td>$0.86$</td>
+<td>$0.83$</td>
+<td>$0.89$</td>
+<td>$0.90$</td>
+</tr>
+<tr>
+<td>autoencoder</td>
+<td>$0.88$</td>
+<td>$0.85$</td>
+<td>$0.91$</td>
+<td>$0.88$</td>
+<td>$0.89$</td>
+<td>$0.84$</td>
+</tr>
+<tr>
+<td>percentile-max fusion</td>
+<td>$0.08$</td>
+<td>$0.05$</td>
+<td>$0.12$</td>
+<td>$0.10$</td>
+<td>$0.14$</td>
+<td>$0.13$</td>
+</tr>
+</tbody>
+</table>
+<p>The smooth teachers are <strong>acquisition-limited</strong>: fidelity saturates by width 8 with capacity to spare. The one-class SVM improves with width ($0.78 \to 0.90$), so its reproduction is partly capacity-bound. The non-smooth fusion improves only weakly ($0.05$ at width 8 to $0.13$ at width 128) and <strong>remains poorly reproduced even at sixteen times the width</strong>. So widening the student is necessary but far from sufficient for the fusion: its difficulty is a genuine interaction of a sharp off-manifold ridge with finite student capacity, not something a modest width increase resolves. We therefore describe this as a hard case rather than a fundamental limit, and we do not claim the radial diagnostic of §4.5 predicts it; the diagnostic only reports that the fusion's profile is non-monotone.</p>
 <h3 id="65-scope-real-high-dimensional-data">6.5 Scope: real high-dimensional data</h3>
 <p>On three real tabular anomaly-detection datasets (shuttle $d=9$, satellite $d=36$, optdigits $d=64$) distilled from monotone detectors, coarse detection is easy and needs no sampling. Here we report the student's standalone detection AUROC against the datasets' ground-truth labels (used for evaluation only, never for training): normals-only or uniform augmentation already produce a student whose AUROC matches the teacher's (shuttle: normals-only $0.987$; satellite: uniform $0.829$; optdigits: normals-only $0.850$). Fine-grained <em>fidelity</em> to the pipeline, however, is poor and noisy for every sampler at these dimensions and sample sizes. We state this as an open limitation rather than a result: the shell-sampling advantage is demonstrated on controlled geometry and on the teacher spectrum, and its transfer to high-dimensional fine-fidelity distillation is unresolved. Two directions would test whether the bottleneck is student capacity rather than query placement: a student-width sweep at fixed queries, and a learned generator that produces shell queries directly instead of rejection-sampling them (which thins out in high $d$). We leave both to future work.</p>
 <h2 id="7-discussion">7. Discussion</h2>
-<p>The practical recommendation is compact: <strong>place a fixed query budget in the low-density shell and weight it by both pipeline score and score-gradient magnitude.</strong> This one sampler is automatically robust to whether the pipeline grows or saturates off the manifold, requires no anomaly labels and no differentiation of the pipeline, and reduces to the two shape-specific samplers as special cases. The score term and the gradient term are individually necessary: dropping the gradient term loses the saturating pipelines, dropping the score term loses the growing ones.</p>
-<p>Two honest boundaries frame the contribution. Pipelines with discontinuous fusion exceed a small student's representational capacity and are not distillable at any sampling budget; a cheap shell probe predicts this. And on real high-dimensional data, coarse detection is already served by trivial baselines while fine-fidelity reproduction is unresolved, so the present contribution is a focused methods-and-analysis result on where queries should go, not a solved deployment pipeline.</p>
+<p>The practical recommendation is compact: <strong>spend the query budget in the low-density shell; add score-and-variation importance weighting when the pipeline saturates off the manifold.</strong> Placing queries in the shell is the dominant lever and is worth doing for any pipeline. Within-shell importance weighting earns its extra pipeline evaluations specifically for saturating pipelines, where the local-variation signal captures the score's edge and the equal score/variation mixture is best (the one-class SVM, §6.1–6.2); for monotone and growing detectors a uniform draw from the shell is already as good, so the weighting can be skipped. The combined sampler is a safe default because it never underperforms uniform-shell on the reproducible pipelines except by a small margin, while capturing the one regime where weighting clearly helps.</p>
+<p>Two boundaries frame the contribution. When the pipeline's off-manifold surface is sharp enough (the non-smooth fusion), reproduction becomes capacity-limited rather than placement-limited, and a larger student is needed (§6.4); the radial diagnostic describes the pipeline's shape but does not by itself certify (un)distillability. And on real high-dimensional data, coarse detection is already served by trivial baselines while fine-fidelity reproduction is unresolved. The present contribution is therefore a focused methods-and-analysis result on where a query budget should go, demonstrated on two-dimensional geometry and a teacher spectrum, not a solved high-dimensional deployment pipeline.</p>
+<h3 id="71-limitations-and-broader-impact">7.1 Limitations and broader impact</h3>
+<p><strong>Input validity.</strong> Our queries are Euclidean shell points in a continuous, standardized feature space. For mixed or bounded tabular data a shell point need not be a valid input; a deployment version would respect categorical levels and box constraints, or generate queries in a decoded latent space, and we have not tested that.</p>
+<p><strong>Edge deployment.</strong> We motivate compression by edge budgets but report no latency, memory, or energy measurements; the student is small by construction (about 40 parameters at $d=2$), but a deployment claim would need a device or standardized-CPU compression table, which we leave to future work.</p>
+<p><strong>Relation to model extraction.</strong> Training a surrogate from blackbox scores is technically adjacent to unauthorized model extraction. The intended use here is authorized compression of a pipeline whose owner can query the deployed system but wishes to run a lighter model on an edge target; we evaluate only locally controlled teachers and public benchmarks, and target no proprietary service. Providers for whom pipeline functionality is sensitive can mitigate unauthorized cloning through authentication, rate limits, and monitoring of high-volume synthetic querying.</p>
 <h2 id="8-conclusion">8. Conclusion</h2>
-<p>Distilling a blackbox unsupervised anomaly pipeline with no anomaly labels is a query-placement problem. The informative queries sit in the low-density shell just off the normal manifold, and the right target within the shell follows the pipeline's off-manifold shape: score for growing pipelines, score-gradient for saturating ones. A single shell sampler weighted by both is automatically shape-robust, reproduces a spectrum of teacher pipelines with high fidelity, and comes with a cheap probe that predicts when a pipeline is beyond a small student's reach. The open frontier is fine-fidelity distillation in high dimensions, where student capacity, not query placement, appears to bind. All code, data, and results are released.</p>
+<p>Distilling a blackbox unsupervised anomaly pipeline with only normal data is a query-placement problem. The informative queries sit in the low-density shell just off the normal manifold: placing a query budget there, rather than on the manifold or in the far field, is the dominant lever and recovers most of the fidelity a small student can reach. Within the shell, importance weighting by pipeline score and local score variation adds a targeted gain for saturating pipelines, where a uniform shell draw leaves the boundary structure under-sampled; for monotone and growing detectors uniform-shell sampling is already competitive. A non-smooth fusion pipeline stays hard even as the student is widened, marking the boundary between placement-limited and capacity-limited reproduction. The open frontier is fine-fidelity distillation in high dimensions, where both query-efficient variation estimation and student capacity will matter; we release all code, data, and results.</p>
 <h2 id="references">References</h2>
 <ul>
 <li>Angluin, D. (1988). <em>Queries and concept learning.</em> Machine Learning 2(4).</li>
@@ -222,11 +297,17 @@ where $\widehat{g}(x) = g(x) / \sum_{x' \in \text{pool}} g(x')$ normalizes each 
 <li>Chen, R., Batra, D., Kira, Z., Piché-Taillefer, R., and Wolf, C. (2020). <em>Adversarially trained variational autoencoders for anomaly detection.</em> arXiv:2010.11024.</li>
 <li>Ducoffe, M. and Precioso, F. (2018). <em>Adversarial active learning for deep networks: a margin based approach.</em> arXiv:1802.09841.</li>
 <li>Golan, I. and El-Yaniv, R. (2018). <em>Deep anomaly detection using geometric transformations.</em> NeurIPS.</li>
+<li>Goyal, S., Raghunathan, A., Jain, M., Simhadri, H. V., and Jain, P. (2020). <em>DROCC: deep robust one-class classification.</em> ICML.</li>
+<li>Hendrycks, D., Mazeika, M., and Dietterich, T. (2019). <em>Deep anomaly detection with outlier exposure.</em> ICLR.</li>
 <li>Hinton, G., Vinyals, O., and Dean, J. (2015). <em>Distilling the knowledge in a neural network.</em> NIPS Deep Learning Workshop. arXiv:1503.02531.</li>
 <li>Houlsby, N., Huszár, F., Ghahramani, Z., and Lengyel, M. (2011). <em>Bayesian active learning for classification and preference learning.</em> arXiv:1112.5745.</li>
+<li>Kariyappa, S., Prakash, A., and Qureshi, M. K. (2021). <em>MAZE: data-free model stealing attack using zeroth-order gradient estimation.</em> CVPR.</li>
 <li>Li, C.-L., Sohn, K., Yoon, J., and Pfister, T. (2021). <em>CutPaste: self-supervised learning for anomaly detection and localization.</em> CVPR.</li>
 <li>Liu, F. T., Ting, K. M., and Zhou, Z.-H. (2008). <em>Isolation forest.</em> ICDM.</li>
 <li>Nayak, G. K., Mopuri, K. R., Shaj, V., Radhakrishnan, V. B., and Chakraborty, A. (2019). <em>Zero-shot knowledge distillation in deep networks.</em> ICML.</li>
+<li>Ngo, P. C., Winarto, A. A., Kou, C. K. L., Park, S., Akram, F., and Lee, H. K. (2019). <em>Fence GAN: towards better anomaly detection.</em> ICTAI.</li>
+<li>Orekondy, T., Schiele, B., and Fritz, M. (2019). <em>Knockoff nets: stealing functionality of black-box models.</em> CVPR.</li>
+<li>Pal, S., Gupta, Y., Shukla, A., Kanade, A., Shevade, S., and Ganapathy, V. (2020). <em>ActiveThief: model extraction using active learning and unannotated public data.</em> AAAI.</li>
 <li>Park, W., Kim, D., Lu, Y., and Cho, M. (2019). <em>Relational knowledge distillation.</em> CVPR.</li>
 <li>Romero, A., Ballas, N., Kahou, S. E., Chassang, A., Gatta, C., and Bengio, Y. (2015). <em>FitNets: hints for thin deep nets.</em> ICLR.</li>
 <li>Roth, K., Pemula, L., Zepeda, J., Schölkopf, B., Brox, T., and Gehler, P. (2022). <em>Towards total recall in industrial anomaly detection.</em> CVPR.</li>
@@ -239,14 +320,52 @@ where $\widehat{g}(x) = g(x) / \sum_{x' \in \text{pool}} g(x')$ normalizes each 
 <li>Silverman, B. W. (1986). <em>Density estimation for statistics and data analysis.</em> Chapman &amp; Hall.</li>
 <li>Song, Y. and Ermon, S. (2019). <em>Generative modeling by estimating gradients of the data distribution.</em> NeurIPS.</li>
 <li>Song, Y. and Ermon, S. (2020). <em>Improved techniques for training score-based generative models.</em> NeurIPS.</li>
+<li>Tramèr, F., Zhang, F., Juels, A., Reiter, M. K., and Ristenpart, T. (2016). <em>Stealing machine learning models via prediction APIs.</em> USENIX Security.</li>
 <li>Welling, M. and Teh, Y. W. (2011). <em>Bayesian learning via stochastic gradient Langevin dynamics.</em> ICML.</li>
 <li>Zavrtanik, V., Kristan, M., and Skočaj, D. (2021). <em>DRAEM: a discriminatively trained reconstruction embedding for surface anomaly detection.</em> ICCV.</li>
+<li>Zhang, J., Chen, C., and Lyu, L. (2023). <em>IDEAL: query-efficient data-free learning from black-box models.</em> ICLR.</li>
 <li>Zhou, C. and Paffenroth, R. C. (2017). <em>Anomaly detection with robust deep autoencoders.</em> KDD.</li>
 </ul>
-<h2 id="appendix-a-samplers">Appendix A — Samplers</h2>
-<p><strong>Combined shell sampler (used throughout).</strong> Draw a candidate pool uniformly in the low-density shell $\rho_{\min} \le \rho(x) \le \rho_{\max}$ (pool size $12M$, rejection-sampling a bounding box on $\rho$); compute each candidate's extended rank $u(x)$ and its gradient magnitude $\|\nabla_x u(x)\|$ by central finite differences with step $h=0.05$; importance-sample $M$ queries with probability proportional to $\tfrac12\widehat u + \tfrac12\widehat{\|\nabla u\|}$.</p>
-<p><strong>Langevin variant (used in §6.3).</strong> Start chains at random normals and walk up the same shell potential $\tfrac12 u + \tfrac12\|\nabla u\|$ while a density prior $\log \hat p(x)$ (a Gaussian kernel density estimate over the normals, bandwidth $0.3$) pulls chains that stray too far back toward the manifold; a per-chain projection radius drawn log-uniformly lets some chains reach farther into the shell than others. This gives fidelity comparable to the importance-weighted sampler on the teachers we tested; the importance-weighted form is simpler and needs no step-size tuning, so it is used for the spectrum comparison of §6.1.</p>
+<h2 id="appendix-a-samplers-and-query-complexity">Appendix A — Samplers and query complexity</h2>
+<p><strong>Combined shell sampler (used throughout).</strong> Draw a candidate pool uniformly in the low-density shell $\rho_{\min} \le \rho(x) \le \rho_{\max}$ (pool size $C = 12M$, rejection-sampling a bounding box on $\rho$); compute each candidate's extended rank $u(x)$ and its local variation $v(x)$; importance-sample $M$ queries with probability proportional to $\tfrac12\widehat u + \tfrac12\widehat v$. The local variation is either the coordinate finite-difference magnitude ($\|\Delta_h u\|$, step $h=0.05$) or the $K$-random-direction estimator $v_K(x) = \tfrac1K\sum_{k=1}^K |u(x+h z_k) - u(x-h z_k)|/(2h)$ with $z_k$ uniform on the unit sphere. The estimators agree on the monotone and growing teachers, but at $K=2$ the random-direction estimator loses fidelity on the one teacher where variation matters (the one-class SVM: combined fidelity $0.65$ with $K=2$ versus $0.73$ with coordinate differences, 10 seeds). This is the expected accuracy/cost tradeoff: $K=2$ is dimension-independent ($O(K)$ evaluations per candidate) but too coarse to resolve the variation signal as well as the $O(d)$ coordinate estimate does at $d=2$. Tuning $K$, and testing whether the tradeoff improves in higher dimension where coordinate differences become prohibitive, is left to future work.</p>
+<p><strong>Query complexity.</strong> Every method uses $M$ student-training queries; they differ in the pipeline evaluations spent on acquisition:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>pipeline evaluations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>normals-only / off-shell baselines / uniform-shell</td>
+<td>$M$</td>
+</tr>
+<tr>
+<td>score-only (pool $C$)</td>
+<td>$C$</td>
+</tr>
+<tr>
+<td>variation-only, coordinate finite differences</td>
+<td>$C(1 + 2d)$</td>
+</tr>
+<tr>
+<td>variation-only, $K$-direction estimator</td>
+<td>$C(1 + 2K)$</td>
+</tr>
+<tr>
+<td>combined, coordinate finite differences</td>
+<td>$C(1 + 2d)$</td>
+</tr>
+<tr>
+<td>combined, $K$-direction estimator</td>
+<td>$C(1 + 2K)$</td>
+</tr>
+</tbody>
+</table>
+<p>With $C = 12M$, $M = 2000$: the score-only sampler spends $24{,}000$ evaluations, the coordinate-difference combined sampler $12M(1+2d)$ ($120{,}000$ at $d=2$, growing linearly with $d$), and the $K$-direction combined sampler $12M(1+2K)$ ($60{,}000$ at $K=2$, independent of $d$). Our main tables hold $M$ fixed; a fully cost-matched comparison at equal total evaluations is future work (§7).</p>
+<p><strong>Langevin variant (used in §6.3).</strong> Start chains at random normals and walk up the same shell potential $\tfrac12 u + \tfrac12 v$ while a density prior $\log \hat p(x)$ (a Gaussian kernel density estimate over the normals, bandwidth $0.3$) pulls chains that stray too far back toward the manifold; a per-chain projection radius drawn log-uniformly lets some chains reach farther into the shell than others. This gives fidelity comparable to the importance-weighted sampler on the teachers we tested; the importance-weighted form is simpler and needs no step-size tuning, so it is used for the spectrum comparison of §6.1.</p>
 <h2 id="appendix-b-reproduction">Appendix B — Reproduction</h2>
-<p>The teacher spectrum, the complex-pipeline mechanism study, and the real-data evaluation are separate CPU-only scripts. The score-plus-gradient shell sampler and the shape probe are single functions; the finite-difference gradient is batched into one pipeline-scoring pass per step.</p>
+<p>The teacher spectrum, the mixture and query-estimator sweeps, the capacity sweep, the mechanism study, and the real-data evaluation are separate CPU-only scripts (<code>experiment_v2.py</code>, <code>experiment_edge.py</code>, <code>experiment_complex.py</code>, <code>experiment_real.py</code>). The shell sampler, the local-variation estimators, and the radial diagnostic are single functions; the coordinate finite differences are batched into one pipeline-scoring pass per step. The repository records per-seed results and the command for every table and figure at https://github.com/ApartsinProjects/PipelineDistil (to be anonymized for review).</p>
 </body>
 </html>
