@@ -24,8 +24,12 @@ HTML2DOC = Path(r"C:\Users\apart\.claude\skills\html2doc")
 
 TITLE = ("Where to Query a Blackbox Anomaly Pipeline: "
          "Shell Sampling for Label-Free Distillation")
-AUTHOR_HTML = ('<p class="authors">Alexander Apartsin</p>'
-               '<p class="affil">Independent research draft, 2026-08-29</p>')
+AUTHOR_HTML = (
+    '<p class="authors">Alexander Apartsin<sup>1</sup>, Yehudit Aperstein<sup>2</sup></p>'
+    '<p class="affil"><sup>1</sup>School of Computer Science, Faculty of Sciences, '
+    'Holon Institute of Technology (HIT), Holon, Israel</p>'
+    '<p class="affil"><sup>2</sup>Intelligent Systems, Afeka Academic College of '
+    'Engineering, Tel-Aviv, Israel</p>')
 
 STYLE = """
 :root{
