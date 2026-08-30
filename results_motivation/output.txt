@@ -1,0 +1,32 @@
+=== Q1: fraction of real anomalies inside the normal-data shell ===
+  dataset           d  in-shell %  fid-gain
+  23_mammography    6       62.7%    -0.166
+  38_thyroid        6       43.0%    +0.338
+  6_cardio         21       80.1%    +0.122
+  30_satellite     36       66.3%    +0.315
+  28_pendigits     16       96.8%    +0.081
+  40_vowels        12      100.0%    +0.344
+  32_shuttle        9        0.1%    -0.147
+  26_optdigits     64      100.0%    +0.072
+  41_Waveform      21       78.0%    +0.121
+  20_letter        32      100.0%    +0.322
+
+  correlation(in-shell fraction, fidelity gain) = +0.435
+  (positive => normal-data sampling helps exactly when anomalies land in the shell)
+
+=== Q2: non-parametric teacher footprint vs fixed student ===
+  dataset         N_train   d   kNN KB   KDE KB  OCSVM KB  iForest KB  student KB
+  23_mammography     3000   6      181      181        19         935        0.51
+  38_thyroid         1839   6      109      109        12         851        0.51
+  6_cardio            827  21      136      154        20        1025        1.45
+  30_satellite       2199  36      619      674        68        1207        2.38
+  28_pendigits       3000  16      375      435        45        1631        1.13
+  40_vowels           703  12       79       79        11        1257        0.88
+  32_shuttle         3000   9      257      257        26        1069        0.70
+  26_optdigits       2533  64     1267     1352       143        1469        4.13
+  41_Waveform        1671  21      275      311        35        1152        1.45
+  20_letter           750  32      188      211        30        1250        2.13
+
+  kNN/KDE store the whole training set; OCSVM stores support vectors;
+  IsolationForest stores 100 trees. All grow with N. The student is a
+  fixed ~a-few-KB net regardless of N -- which is why distillation is worthwhile.
