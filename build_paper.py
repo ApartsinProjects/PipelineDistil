@@ -274,7 +274,7 @@ def canaries():
     both figures embedded (checked by presence of img tags in HTML)."""
     html_txt = HTML_OUT.read_text(encoding="utf-8")
     assert "paper.docx" in html_txt, "HTML does not link the DOCX"
-    for fig in ("figure_sampler_shape.png", "figure_complex.png", "figure_highd_scaling.png"):
+    for fig in ("figure_sampler_shape.png", "figure_complex.png", "figure_highd_scaling.png", "figure_realbench.png"):
         assert fig in html_txt, f"HTML missing reference to {fig}"
     import re as _re
     for banned in (r"\bSAG\b", r"\bSafeRide\b", r"\bgap filling\b",
