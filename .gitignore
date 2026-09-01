@@ -4,3 +4,6 @@ _preview_*.png
 _paper_*.html
 paper_artifact.html
 .DS_Store
+bundle.tar.gz
+results_pipedistil-*/
+results_manifold_crossover/

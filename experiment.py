@@ -168,27 +168,27 @@ def make_percentile_maps(S_train):
             s_sorted = sorted_scores[k]
             xs = S[:, k]
             base = np.interp(xs, s_sorted, pct_values)
-            # Above training max: extrapolate with top-decile slope but CAP
-            # at pct=1 + BUFFER. Unbounded extrapolation on heavy-tailed
-            # real-data teacher scores blows the student's targets up and
-            # can invert the AUROC sign; capping keeps the signal ordered
-            # but bounded.
-            BUFFER = 1.0
+            # Above training max: extrapolate with the top-decile slope, then
+            # pass the overshoot through a strictly monotone log squash. A hard
+            # clip at pct=1+BUFFER collapses every far point to one value, tying
+            # ~half the off-manifold supervision (measured: 46% of shell targets
+            # on a fast-growing teacher). log1p growth is order-preserving (no
+            # ties), unbounded-but-slow (no AUROC blow-up on heavy tails).
             above = xs > s_sorted[-1]
             if above.any():
                 idx_lo = max(N - N // 10, 0)
                 dx = max(s_sorted[-1] - s_sorted[idx_lo], 1e-9)
                 dp = pct_values[-1] - pct_values[idx_lo]
-                ext = pct_values[-1] + (xs[above] - s_sorted[-1]) * (dp / dx)
-                base[above] = np.minimum(ext, pct_values[-1] + BUFFER)
-            # Below training min: mirror extrapolation.
+                ext = (xs[above] - s_sorted[-1]) * (dp / dx)   # >= 0 overshoot
+                base[above] = pct_values[-1] + np.log1p(ext)
+            # Below training min: mirror extrapolation with the same squash.
             below = xs < s_sorted[0]
             if below.any():
                 idx_hi = min(N // 10, N - 1)
                 dx = max(s_sorted[idx_hi] - s_sorted[0], 1e-9)
                 dp = pct_values[idx_hi] - pct_values[0]
-                ext = pct_values[0] + (xs[below] - s_sorted[0]) * (dp / dx)
-                base[below] = np.maximum(ext, pct_values[0] - BUFFER)
+                ext = (s_sorted[0] - xs[below]) * (dp / dx)    # >= 0 overshoot
+                base[below] = pct_values[0] - np.log1p(ext)
             out[:, k] = base
         return out
     return pct
