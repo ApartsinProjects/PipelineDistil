@@ -165,3 +165,21 @@ Phase 0 gates everything: its kill condition ends the direction and switches to 
 ---
 
 Gravestones (one line each, kept out of the paper body): stable-student criterion (tautology); coverage law (unfalsifiable, refuted in low dimensions); boundary-seeking latent synthesis (ill-posed, 2607.15919); pure latent-sample-and-decode transfer set (circular, Section 3A, measured in E1); attribution as a win (resists distillation, reported as scope).
+
+---
+
+## STATUS 2026-10-16: method claim KILLED by the pre-registered smoke (budget-matched)
+
+TSB-AD-M, 41 completed cells (14 series x 3 seeds; 18 cells of the largest series lost to a 2 h pod
+cap), all arms at the same 60k pipeline-query budget, no target clip. Invariants hold (oracle best
+arm in 90% of cells, oracle <= replay in 98%). Median fused-alarm regret at k=5% / floor pass rate:
+oracle 0.12 / 59%, full-data replay 0.33 / 20%, backward 0.48 / 5%, Vernekar steps 0.42 / 12%,
+Wang search 0.46 / 2%, uniform 0.45 / 22%, latent decode 0.62 / 0%.
+Backward probing is worse than Vernekar random null-space steps (paired Wilcoxon p=0.047), tied
+with Wang search (p=0.71), not better than uniform (p=0.13), and far below replay (p=5e-4). Kill
+condition met: it fails the floor where replay passes and does not beat the novelty-check baselines.
+Survives: latent-decode circularity (decoded probes alarm 2% of the time in run 1; worst arm here,
+significantly worse than backward, p=0.002). No data-free arm reaches the floor reliably.
+Caveat: smoke students were a single MLP without input standardization; Phase 3 showed training
+quality changes regret strongly, but the comparison between arms used the same student.
+Raw parsed rows: results_backward_smoke2_parsed.csv (CSV on the pod was lost at the timeout).
